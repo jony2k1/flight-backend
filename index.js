@@ -58,3 +58,14 @@ app.get("/", (req, res) => {
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
+// Live flights over Middle East
+app.get("/live-flights", async (req, res) => {
+  try {
+    const response = await axios.get(
+      "https://opensky-network.org/api/states/all?lamin=10&lomin=30&lamax=40&lomax=65"
+    );
+    res.json(response.data);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch live flights" });
+  }
+});
