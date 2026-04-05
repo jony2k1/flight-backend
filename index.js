@@ -1,0 +1,60 @@
+const express = require("express");
+const cors = require("cors");
+const axios = require("axios");
+
+const app = express();
+const PORT = 3001;
+
+// Allow requests from our React app
+app.use(cors());
+app.use(express.json());
+
+const API_KEY = "d10d111151530107984df4d86f34f6db";
+
+// Get airport info
+app.get("/airport", async (req, res) => {
+  try {
+    const { code } = req.query;
+    const response = await axios.get(
+      `https://api.aviationstack.com/v1/airports?access_key=${API_KEY}&iata_code=${code}`
+    );
+    res.json(response.data);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch airport" });
+  }
+});
+
+// Get flight info
+app.get("/flight", async (req, res) => {
+  try {
+    const { number } = req.query;
+    const response = await axios.get(
+      `https://api.aviationstack.com/v1/flights?access_key=${API_KEY}&flight_iata=${number}`
+    );
+    res.json(response.data);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch flight" });
+  }
+});
+
+// Search airports
+app.get("/airports/search", async (req, res) => {
+  try {
+    const { q } = req.query;
+    const response = await axios.get(
+      `https://api.aviationstack.com/v1/airports?access_key=${API_KEY}&search=${q}&limit=10`
+    );
+    res.json(response.data);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to search airports" });
+  }
+});
+
+// Test route
+app.get("/", (req, res) => {
+  res.json({ message: "✈️ Flight Backend Running!" });
+});
+
+app.listen(PORT, () => {
+  console.log(`✈️ Server running on http://localhost:${PORT}`);
+});
