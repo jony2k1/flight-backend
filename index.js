@@ -55,7 +55,7 @@ app.post("/extract-flight", async (req, res) => {
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
-        model: "claude-sonnet-4-20250514",
+        model: "claude-haiku-4-5",
         max_tokens: 1000,
         messages: [{ role: "user", content: `Extract flight booking from this email. Return ONLY JSON or null.
 
