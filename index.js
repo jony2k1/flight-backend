@@ -89,3 +89,6 @@ app.get("/", (req, res) => {
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
+app.get("/debug-key", (req, res) => {
+  res.json({ key: process.env.ANTHROPIC_KEY ? process.env.ANTHROPIC_KEY.substring(0, 20) + "..." : "NOT SET" });
+});
