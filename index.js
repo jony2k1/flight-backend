@@ -71,7 +71,7 @@ If NOT a flight booking return: null` }]
       {
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": process.env.ANTHROPIC_KEY || "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",
+          "x-api-key": process.env.ANTHROPIC_KEY || "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",
           "anthropic-version": "2023-06-01",
         }
       }
