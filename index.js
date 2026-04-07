@@ -67,7 +67,7 @@ Look for: flight numbers (SV123, EK204, 6E456, GF64, JAI123 etc), airport codes 
 
 These are booking confirmation emails from airlines like Saudia, IndiGo, Emirates, Gulf Air, Jazeera, Air Arabia, Etihad, FlyDubai, Kuwait Airways, Oman Air, Flynas, Scoot, SpiceJet, Air India, Akasa, Vistara, GoAir, Biman.
 
-Even if email is a check-in reminder, upgrade offer, or itinerary - still extract the flight details.
+Extract flight details from booking confirmations, e-tickets, and itineraries only. Skip OTP, miles rewards, lounge invites, refunds, and promotional emails. If email has no actual flight booking return null.
 Even if email is old (2014, 2015, 2016...) still extract.
 Even if subject is in Arabic - still extract flight data from body.
 
