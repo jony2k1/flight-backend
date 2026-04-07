@@ -57,16 +57,28 @@ app.post("/extract-flight", async (req, res) => {
       {
         model: "claude-haiku-4-5",
         max_tokens: 1000,
-        messages: [{ role: "user", content: `Extract flight booking from this email. Return ONLY JSON or null.
+        messages: [{ role: "user", content: `You extract flight booking data from airline emails. Be VERY generous - extract ANY flight information you can find.
 
 Subject: ${subject}
 From: ${from}
 Body: ${body}
 
-Return ONLY:
-{"flightNumber":"SV1487","from":"RUH","to":"AQI","fromCity":"Riyadh","toCity":"Qaisumah","date":"2026-02-13","seat":"5L","airline":"Saudia","departure":"15:40","arrival":"16:50"}
+Look for: flight numbers (SV123, EK204, 6E456, GF64, JAI123 etc), airport codes (RUH, BOM, DXB, DEL etc), dates, times, seat numbers, booking codes.
 
-If NOT a flight booking return: null` }]
+These are booking confirmation emails from airlines like Saudia, IndiGo, Emirates, Gulf Air, Jazeera, Air Arabia, Etihad, FlyDubai, Kuwait Airways, Oman Air, Flynas, Scoot, SpiceJet, Air India, Akasa, Vistara, GoAir, Biman.
+
+Even if email is a check-in reminder, upgrade offer, or itinerary - still extract the flight details.
+Even if email is old (2014, 2015, 2016...) still extract.
+Even if subject is in Arabic - still extract flight data from body.
+
+Return ONLY JSON (no extra text, no markdown), examples:
+{"flightNumber":"SV1487","from":"RUH","to":"AQI","fromCity":"Riyadh","toCity":"Qaisumah","date":"2026-02-13","seat":"5L","airline":"Saudia","departure":"15:40","arrival":"16:50"}
+{"flightNumber":"6E456","from":"DEL","to":"BOM","fromCity":"Delhi","toCity":"Mumbai","date":"2019-05-10","seat":"12A","airline":"IndiGo","departure":"06:00","arrival":"08:10"}
+{"flightNumber":"EK204","from":"DXB","to":"BOM","fromCity":"Dubai","toCity":"Mumbai","date":"2021-03-15","seat":"34B","airline":"Emirates","departure":"14:20","arrival":"18:30"}
+{"flightNumber":"GF64","from":"BAH","to":"BOM","fromCity":"Bahrain","toCity":"Mumbai","date":"2023-11-20","seat":"19F","airline":"Gulf Air","departure":"14:30","arrival":"20:55"}
+{"flightNumber":"JAI123","from":"KWI","to":"DXB","fromCity":"Kuwait","toCity":"Dubai","date":"2022-08-05","seat":"8C","airline":"Jazeera Airways","departure":"10:00","arrival":"11:30"}
+
+If absolutely no flight info exists return: null` }]
       },
       {
         headers: {
