@@ -138,7 +138,7 @@ app.post("/nylas-emails", async (req, res) => {
   identifier: grantId,
   queryParams: {
     from: sender,
-    limit: 200,
+    limit: 500,
   }
 });
 
