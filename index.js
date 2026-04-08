@@ -134,15 +134,12 @@ app.post("/nylas-emails", async (req, res) => {
     // Search each sender separately to maximize results
     for (const sender of senders) {
       try {
-        const messages = await nylas.messages.list({
-          identifier: grantId,
-          queryParams: {
-            from: sender,
-            limit: 500,
-          }
-        });
-        if (messages.data && messages.data.length > 0) {
-          allEmails = [...allEmails, ...messages.data];
+    const response = await axios.get(
+          `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=500&from=${encodeURIComponent(sender)}`,
+          { headers: { Authorization: `Bearer ${process.env.NYLAS_API_KEY}` } }
+        );
+        if (response.data?.data?.length > 0) {
+          allEmails = [...allEmails, ...response.data.data];
         }
       } catch (err) {
         console.log(`Error fetching from ${sender}:`, err.message);
