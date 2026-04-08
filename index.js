@@ -170,17 +170,16 @@ app.get("/city-photo", async (req, res) => {
     const GOOGLE_KEY = process.env.GOOGLE_PLACES_KEY;
     const searchQuery = city || iata;
 
-    const searchRes = await axios.post(
-      `https://places.googleapis.com/v1/places:searchText`,
-      { textQuery: `${searchQuery} city skyline` },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": GOOGLE_KEY,
-          "X-Goog-FieldMask": "places.id,places.photos",
-        }
-      }
-    );
+    const searchRes = await axios({
+      method: "POST",
+      url: "https://places.googleapis.com/v1/places:searchText",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_KEY,
+        "X-Goog-FieldMask": "places.id,places.photos",
+      },
+      data: { textQuery: `${searchQuery} city skyline` }
+    });
 
     const place = searchRes.data?.places?.[0];
     if (!place?.photos?.[0]) return res.json({ url: null });
@@ -190,8 +189,8 @@ app.get("/city-photo", async (req, res) => {
     res.json({ url: photoUrl });
 
   } catch (error) {
-    console.error("City photo error:", error.message);
-    res.json({ url: null });
+    console.error("City photo error:", error.response?.data || error.message);
+    res.json({ url: null, error: error.response?.data || error.message });
   }
 });
 
