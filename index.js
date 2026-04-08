@@ -181,10 +181,12 @@ app.get("/city-photo", async (req, res) => {
       data: { textQuery: `${searchQuery} city skyline` }
     });
 
-    const place = searchRes.data?.places?.[0];
-    if (!place?.photos?.[0]) return res.json({ url: null });
+    // Find first place that has photos
+    const places = searchRes.data?.places || [];
+    const placeWithPhoto = places.find(p => p.photos && p.photos.length > 0);
+    if (!placeWithPhoto) return res.json({ url: null });
 
-    const photoName = place.photos[0].name;
+    const photoName = placeWithPhoto.photos[0].name;
     const photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=400&maxWidthPx=800&key=${GOOGLE_KEY}`;
     res.json({ url: photoUrl });
 
