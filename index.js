@@ -134,17 +134,24 @@ app.post("/nylas-emails", async (req, res) => {
     // Search each sender separately to maximize results
     for (const sender of senders) {
       try {
-   const messages = await nylas.messages.list({
-  identifier: grantId,
-  queryParams: {
-    from: sender,
-    limit: 500,
-  }
-});
-
-        if (messages.data && messages.data.length > 0) {
-          allEmails = [...allEmails, ...messages.data];
-        }
+        let cursor = null;
+        let pageCount = 0;
+        do {
+          const messages = await nylas.messages.list({
+            identifier: grantId,
+            queryParams: {
+              from: sender,
+              limit: 500,
+              ...(cursor && { page_token: cursor }),
+            }
+          });
+          if (messages.data && messages.data.length > 0) {
+            allEmails = [...allEmails, ...messages.data];
+          }
+          cursor = messages.next_cursor || null;
+          pageCount++;
+          if (pageCount > 10) break;
+        } while (cursor);
       } catch (err) {
         console.log(`Error fetching from ${sender}:`, err.message);
         continue;
