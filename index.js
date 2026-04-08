@@ -1,7 +1,6 @@
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
-const Nylas = require("nylas").default;
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -11,11 +10,15 @@ app.use(express.json());
 
 const API_KEY = "d10d111151530107984df4d86f34f6db";
 
-// Initialize Nylas
-const nylas = new Nylas({
-  apiKey: process.env.NYLAS_API_KEY,
-  apiUri: "https://api.us.nylas.com",
-});
+const AIRLINE_DOMAINS = [
+  "saudia.com", "goindigo.in", "emirates.com",
+  "travel-akasaair.in", "etihad.com", "flydubai.com",
+  "gulfair.com", "airindia.in", "kuwaitairways.com",
+  "omanair.com", "spicejet.com", "goair.in",
+  "flyscoot.com", "flynas.com", "flyadeal.com",
+  "biman-airlines.com", "airarabia.com", "jazeeraairways.com",
+  "airvistara.com", "thaiairways.com",
+];
 
 app.get("/airport", async (req, res) => {
   try {
@@ -101,53 +104,40 @@ If absolutely no flight info exists return: null` }]
   }
 });
 
-// NEW — Nylas fetch emails endpoint
+// Nylas fetch emails - fetch all then filter by airline domain
 app.post("/nylas-emails", async (req, res) => {
   try {
     const { grantId } = req.body;
-
-    const senders = [
-      "info@saudia.com", "saudia.com",
-      "reservations@customer.goindigo.in", "customer.goindigo.in",
-      "do-not-reply@emirates.com", "noreply@emirates.com",
-      "updates@travel-akasaair.in",
-      "noreply@etihad.com", "info@bookings.etihad.com",
-      "confirmation@flydubai.com",
-      "no-reply@gulfair.com", "noreply@gulfair.com",
-      "airindia@airindia.in",
-      "kuwaitairways@kuwaitairways.com", "travelinfo@kuwaitairways.com",
-      "webbooking@omanair.com",
-      "Itinerary@spicejet.com",
-      "info@goair.in",
-      "your-trip@itinerary.flyscoot.com", "noreply@flyscoot.com",
-      "no-reply@flynas.com",
-      "flyadeal@flyadeal.com",
-      "biman@biman-airlines.com",
-      "reservations@airarabia.com", "info@airarabia.com",
-      "info@jazeeraairways.com", "bookings@jazeeraairways.com",
-      "vistara@airvistara.com",
-      "thaiairways.com",
-    ];
+    const NYLAS_KEY = process.env.NYLAS_API_KEY;
 
     let allEmails = [];
+    let cursor = null;
+    let pageCount = 0;
 
-    // Search each sender separately to maximize results
-    for (const sender of senders) {
-      try {
-    const response = await axios.get(
-          `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=500&any_email=${encodeURIComponent(sender)}`,
-          { headers: { Authorization: `Bearer ${process.env.NYLAS_API_KEY}` } }
-        );
-        if (response.data?.data?.length > 0) {
-          allEmails = [...allEmails, ...response.data.data];
-        }
-      } catch (err) {
-        console.log(`Error fetching from ${sender}:`, err.message);
-        continue;
+    do {
+      const url = cursor
+        ? `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=500&page_token=${cursor}`
+        : `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=500`;
+
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${NYLAS_KEY}` }
+      });
+
+      if (response.data?.data?.length > 0) {
+        const airlineEmails = response.data.data.filter(m => {
+          const fromEmail = (m.from?.[0]?.email || "").toLowerCase();
+          return AIRLINE_DOMAINS.some(domain => fromEmail.includes(domain));
+        });
+        allEmails = [...allEmails, ...airlineEmails];
       }
-    }
 
-    // Remove duplicates by message ID
+      cursor = response.data?.next_cursor || null;
+      pageCount++;
+      if (pageCount >= 10) break;
+
+    } while (cursor);
+
+    // Remove duplicates
     const seen = new Set();
     allEmails = allEmails.filter(m => {
       if (seen.has(m.id)) return false;
@@ -155,7 +145,7 @@ app.post("/nylas-emails", async (req, res) => {
       return true;
     });
 
-    // Format emails for frontend
+    // Format for frontend
     const formatted = allEmails.map(m => ({
       id: m.id,
       subject: m.subject || "",
@@ -167,36 +157,7 @@ app.post("/nylas-emails", async (req, res) => {
     res.json({ emails: formatted, total: formatted.length });
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Nylas Auth URL generator
-app.get("/nylas-auth-url", async (req, res) => {
-  try {
-    const authURL = nylas.auth.urlForOAuth2({
-      clientId: process.env.NYLAS_CLIENT_ID || "066dd961-f845-4cbe-a1d3-ea7548813ca5",
-      redirectUri: "https://skytracker-ten.vercel.app/auth/callback",
-      scope: ["https://www.googleapis.com/auth/gmail.readonly"],
-    });
-    res.json({ url: authURL });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Nylas Auth callback
-app.post("/nylas-auth-callback", async (req, res) => {
-  try {
-    const { code } = req.body;
-    const { grantId } = await nylas.auth.exchangeCodeForToken({
-      clientId: process.env.NYLAS_CLIENT_ID || "066dd961-f845-4cbe-a1d3-ea7548813ca5",
-      clientSecret: process.env.NYLAS_CLIENT_SECRET || "",
-      redirectUri: "https://skytracker-ten.vercel.app/auth/callback",
-      code,
-    });
-    res.json({ grantId });
-  } catch (error) {
+    console.error("Nylas error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
