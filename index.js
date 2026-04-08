@@ -134,10 +134,13 @@ app.post("/nylas-emails", async (req, res) => {
     // Search each sender separately to maximize results
     for (const sender of senders) {
       try {
-        const messages = await nylas.messages.list(grantId, {
-          from: sender,
-          limit: 200,
-        });
+   const messages = await nylas.messages.list({
+  identifier: grantId,
+  queryParams: {
+    from: sender,
+    limit: 200,
+  }
+});
 
         if (messages.data && messages.data.length > 0) {
           allEmails = [...allEmails, ...messages.data];
