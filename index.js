@@ -116,8 +116,8 @@ app.post("/nylas-emails", async (req, res) => {
 
     do {
       const url = cursor
-        ? `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=50&page_token=${cursor}`
-        : `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=50`;
+        ? `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=200&page_token=${cursor}`
+        : `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=200`;
 
       const response = await axios.get(url, {
         headers: { Authorization: `Bearer ${NYLAS_KEY}` }
