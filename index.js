@@ -135,7 +135,7 @@ app.post("/nylas-emails", async (req, res) => {
     for (const sender of senders) {
       try {
     const response = await axios.get(
-          `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=500&from=${encodeURIComponent(sender)}`,
+          `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=500&any_email=${encodeURIComponent(sender)}`,
           { headers: { Authorization: `Bearer ${process.env.NYLAS_API_KEY}` } }
         );
         if (response.data?.data?.length > 0) {
