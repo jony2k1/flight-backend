@@ -184,11 +184,16 @@ app.get("/city-photo", async (req, res) => {
     // Find first place that has photos
     const places = searchRes.data?.places || [];
     const placeWithPhoto = places.find(p => p.photos && p.photos.length > 0);
-    if (!placeWithPhoto) return res.json({ url: null });
+    if (!placeWithPhoto) return res.status(404).send("No photo found");
 
     const photoName = placeWithPhoto.photos[0].name;
     const photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=400&maxWidthPx=800&key=${GOOGLE_KEY}`;
-    res.json({ url: photoUrl });
+    
+    // Proxy the image to avoid CORS issues
+    const imageRes = await axios.get(photoUrl, { responseType: "arraybuffer" });
+    res.set("Content-Type", imageRes.headers["content-type"]);
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(imageRes.data);
 
   } catch (error) {
     console.error("City photo error:", error.response?.data || error.message);
