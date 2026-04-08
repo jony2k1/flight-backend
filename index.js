@@ -116,8 +116,8 @@ app.post("/nylas-emails", async (req, res) => {
 
     do {
       const url = cursor
-        ? `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=200&page_token=${cursor}`
-        : `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=200`;
+        ? `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=500&page_token=${cursor}`
+        : `https://api.us.nylas.com/v3/grants/${grantId}/messages?limit=500`;
 
       const response = await axios.get(url, {
         headers: { Authorization: `Bearer ${NYLAS_KEY}` }
@@ -159,6 +159,39 @@ app.post("/nylas-emails", async (req, res) => {
   } catch (error) {
     console.error("Nylas error:", error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+
+// Google Places city photo endpoint
+app.get("/city-photo", async (req, res) => {
+  try {
+    const { city, iata } = req.query;
+    const GOOGLE_KEY = process.env.GOOGLE_PLACES_KEY;
+    const searchQuery = city || iata;
+
+    const searchRes = await axios.post(
+      `https://places.googleapis.com/v1/places:searchText`,
+      { textQuery: `${searchQuery} city skyline` },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": GOOGLE_KEY,
+          "X-Goog-FieldMask": "places.id,places.photos",
+        }
+      }
+    );
+
+    const place = searchRes.data?.places?.[0];
+    if (!place?.photos?.[0]) return res.json({ url: null });
+
+    const photoName = place.photos[0].name;
+    const photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=400&maxWidthPx=800&key=${GOOGLE_KEY}`;
+    res.json({ url: photoUrl });
+
+  } catch (error) {
+    console.error("City photo error:", error.message);
+    res.json({ url: null });
   }
 });
 
