@@ -13,7 +13,7 @@ const API_KEY = "d10d111151530107984df4d86f34f6db";
 
 // Initialize Nylas
 const nylas = new Nylas({
-  apiKey: process.env.NYLAS_API_KEY || "nyk_v0_iFsgMlHFKFq8wWfu4ZEin29JvP9xcTmiDu0qYxOe7VlJQgkOnMZ8NteCUmJwXYCD",
+  apiKey: process.env.NYLAS_API_KEY,
   apiUri: "https://api.us.nylas.com",
 });
 
