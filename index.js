@@ -172,43 +172,49 @@ app.get("/city-photo", async (req, res) => {
 
     // Curated search queries for best landmark photos
     const CITY_LANDMARKS = {
-      "RUH": "Riyadh skyline Saudi Arabia",
-      "JED": "Jeddah corniche Saudi Arabia",
-      "DXB": "Burj Khalifa Dubai skyline",
-      "AUH": "Sheikh Zayed Grand Mosque Abu Dhabi",
-      "BOM": "Mumbai skyline night",
-      "DEL": "India Gate New Delhi night",
-      "SIN": "Singapore Marina Bay Sands skyline",
-      "BKK": "Bangkok Wat Arun temple",
-      "KUL": "Petronas Twin Towers Kuala Lumpur",
-      "BAH": "Manama Bahrain skyline",
-      "DOH": "Doha Qatar skyline",
-      "MCT": "Muscat Oman corniche",
-      "KWI": "Kuwait City towers skyline",
-      "DAC": "Dhaka Bangladesh skyline",
-      "LHR": "London Tower Bridge skyline",
-      "NRT": "Tokyo Japan skyline",
-      "IST": "Istanbul Bosphorus Turkey",
-      "CAI": "Pyramids Giza Egypt",
+      "RUH": "Riyadh Saudi Arabia",
+      "JED": "Jeddah Saudi Arabia",
+      "DXB": "Dubai UAE",
+      "AUH": "Abu Dhabi UAE",
+      "BOM": "Mumbai India",
+      "DEL": "New Delhi India",
+      "SIN": "Singapore",
+      "BKK": "Bangkok Thailand",
+      "KUL": "Kuala Lumpur Malaysia",
+      "BAH": "Manama Bahrain",
+      "DOH": "Doha Qatar",
+      "MCT": "Muscat Oman",
+      "KWI": "Kuwait City",
+      "DAC": "Dhaka Bangladesh",
+      "LHR": "London England",
+      "NRT": "Tokyo Japan",
+      "IST": "Istanbul Turkey",
+      "CAI": "Cairo Egypt",
       "DMM": "Dammam Saudi Arabia",
-      "MED": "Masjid Nabawi Medina",
-      "LKO": "Bara Imambara Lucknow India",
-      "IXD": "Triveni Sangam Prayagraj India",
-      "MAA": "Marina Beach Chennai India",
-      "BLR": "Bangalore India skyline",
-      "HYD": "Charminar Hyderabad India",
-      "CCU": "Victoria Memorial Kolkata India",
+      "MED": "Medina Saudi Arabia",
+      "LKO": "Lucknow India",
+      "IXD": "Prayagraj India",
+      "MAA": "Chennai India",
+      "BLR": "Bangalore India",
+      "HYD": "Hyderabad India",
+      "CCU": "Kolkata India",
       "NAG": "Nagpur India",
-      "CMB": "Colombo Sri Lanka skyline",
-      "MLE": "Maldives aerial turquoise water",
-      "SHJ": "Sharjah UAE skyline",
+      "CMB": "Colombo Sri Lanka",
+      "MLE": "Maldives",
+      "SHJ": "Sharjah UAE",
       "CGP": "Chittagong Bangladesh",
-      "ISB": "Faisal Mosque Islamabad Pakistan",
-      "KHI": "Karachi Pakistan skyline",
-      "LHE": "Badshahi Mosque Lahore Pakistan",
-      "CDG": "Paris Eiffel Tower night",
-      "FRA": "Frankfurt Germany skyline",
-      "JFK": "New York City skyline night",
+      "ISB": "Islamabad Pakistan",
+      "KHI": "Karachi Pakistan",
+      "LHE": "Lahore Pakistan",
+      "CDG": "Paris France",
+      "FRA": "Frankfurt Germany",
+      "JFK": "New York City",
+      "RAH": "Rafha Saudi Arabia",
+      "AQI": "Qaisumah Saudi Arabia",
+      "TIF": "Taif Saudi Arabia",
+      "GIZ": "Jizan Saudi Arabia",
+      "ABT": "Al Baha Saudi Arabia",
+      "ELQ": "Madinah Saudi Arabia",
     };
 
     const searchQuery2 = CITY_LANDMARKS[iata] || `${searchQuery} city skyline landmark`;
@@ -218,7 +224,6 @@ app.get("/city-photo", async (req, res) => {
       params: {
         query: searchQuery2,
         per_page: 5,
-        orientation: "landscape",
         order_by: "relevant",
       },
       headers: {
@@ -228,17 +233,15 @@ app.get("/city-photo", async (req, res) => {
 
     // Parse Unsplash response
     const results = searchRes.data?.results || [];
-    if (!results.length) return res.status(404).send("No photo found");
+    if (!results.length) return res.status(404).json({ url: null });
 
     const photo = results[0];
     const photoUrl = photo.urls?.regular || photo.urls?.full;
-    if (!photoUrl) return res.status(404).send("No photo URL");
+    if (!photoUrl) return res.status(404).json({ url: null });
 
-    // Proxy the image to avoid CORS issues
-    const imageRes = await axios.get(photoUrl, { responseType: "arraybuffer" });
-    res.set("Content-Type", imageRes.headers["content-type"] || "image/jpeg");
+    // Return URL directly — no proxying needed, Unsplash URLs work in browser!
     res.set("Cache-Control", "public, max-age=86400");
-    res.send(imageRes.data);
+    res.json({ url: photoUrl });
 
   } catch (error) {
     console.error("City photo error:", error.response?.data || error.message);
