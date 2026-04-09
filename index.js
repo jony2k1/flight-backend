@@ -224,7 +224,7 @@ app.get("/city-photo", async (req, res) => {
     if (!placeWithPhoto) return res.status(404).send("No photo found");
 
     const photoName = placeWithPhoto.photos[0].name;
-    const photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=40maxHeightPx=800&maxWidthPx=12000&maxWidthPx=800&key=${GOOGLE_KEY}`;
+    const photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&maxWidthPx=1200&key=${GOOGLE_KEY}`;
     
     // Proxy the image to avoid CORS issues
     const imageRes = await axios.get(photoUrl, { responseType: "arraybuffer" });
