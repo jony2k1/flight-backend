@@ -226,17 +226,17 @@ app.get("/city-photo", async (req, res) => {
       }
     });
 
-    // Find first place that has photos
-    const places = searchRes.data?.places || [];
-    const placeWithPhoto = places.find(p => p.photos && p.photos.length > 0);
-    if (!placeWithPhoto) return res.status(404).send("No photo found");
+    // Parse Unsplash response
+    const results = searchRes.data?.results || [];
+    if (!results.length) return res.status(404).send("No photo found");
 
-    const photoName = placeWithPhoto.photos[0].name;
-    const photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=400&maxWidthPx=800&key=${GOOGLE_KEY}`;
-    
+    const photo = results[0];
+    const photoUrl = photo.urls?.regular || photo.urls?.full;
+    if (!photoUrl) return res.status(404).send("No photo URL");
+
     // Proxy the image to avoid CORS issues
     const imageRes = await axios.get(photoUrl, { responseType: "arraybuffer" });
-    res.set("Content-Type", imageRes.headers["content-type"]);
+    res.set("Content-Type", imageRes.headers["content-type"] || "image/jpeg");
     res.set("Cache-Control", "public, max-age=86400");
     res.send(imageRes.data);
 
