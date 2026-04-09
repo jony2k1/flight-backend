@@ -170,52 +170,60 @@ app.get("/city-photo", async (req, res) => {
     const GOOGLE_KEY = process.env.GOOGLE_PLACES_KEY;
     const searchQuery = city || iata;
 
-    // Use famous landmarks for better photos
+    // Curated search queries for best landmark photos
     const CITY_LANDMARKS = {
-      "RUH": "Kingdom Centre Tower Riyadh",
-      "JED": "Al-Balad Jeddah waterfront",
+      "RUH": "Riyadh skyline Saudi Arabia",
+      "JED": "Jeddah corniche Saudi Arabia",
       "DXB": "Burj Khalifa Dubai skyline",
       "AUH": "Sheikh Zayed Grand Mosque Abu Dhabi",
-      "BOM": "Gateway of India Mumbai",
-      "DEL": "India Gate New Delhi",
-      "SIN": "Marina Bay Sands Singapore",
-      "BKK": "Wat Phra Kaew Bangkok temple",
+      "BOM": "Mumbai skyline night",
+      "DEL": "India Gate New Delhi night",
+      "SIN": "Singapore Marina Bay Sands skyline",
+      "BKK": "Bangkok Wat Arun temple",
       "KUL": "Petronas Twin Towers Kuala Lumpur",
-      "BAH": "Bahrain World Trade Center Manama",
-      "DOH": "Museum of Islamic Art Doha Qatar",
-      "MCT": "Sultan Qaboos Grand Mosque Muscat",
-      "KWI": "Kuwait Towers",
-      "DAC": "National Parliament House Dhaka",
-      "LHR": "Tower Bridge London",
-      "NRT": "Mount Fuji Tokyo",
-      "IST": "Hagia Sophia Istanbul",
-      "CAI": "Pyramids of Giza Egypt",
-      "DMM": "King Fahd Causeway Dammam",
-      "MED": "Al-Masjid an-Nabawi Medina",
-      "LKO": "Bara Imambara Lucknow",
-      "IXD": "Allahabad Sangam Prayagraj",
-      "MAA": "Marina Beach Chennai",
-      "BLR": "Vidhana Soudha Bangalore",
-      "HYD": "Charminar Hyderabad",
-      "CCU": "Victoria Memorial Kolkata",
-      "NAG": "Deekshabhoomi Nagpur",
-      "CMB": "Lotus Tower Colombo",
-      "MLE": "Maldives turquoise water resort",
-      "SHJ": "Sharjah waterfront UAE",
-      "CGP": "Chittagong port Bangladesh",
+      "BAH": "Manama Bahrain skyline",
+      "DOH": "Doha Qatar skyline",
+      "MCT": "Muscat Oman corniche",
+      "KWI": "Kuwait City towers skyline",
+      "DAC": "Dhaka Bangladesh skyline",
+      "LHR": "London Tower Bridge skyline",
+      "NRT": "Tokyo Japan skyline",
+      "IST": "Istanbul Bosphorus Turkey",
+      "CAI": "Pyramids Giza Egypt",
+      "DMM": "Dammam Saudi Arabia",
+      "MED": "Masjid Nabawi Medina",
+      "LKO": "Bara Imambara Lucknow India",
+      "IXD": "Triveni Sangam Prayagraj India",
+      "MAA": "Marina Beach Chennai India",
+      "BLR": "Bangalore India skyline",
+      "HYD": "Charminar Hyderabad India",
+      "CCU": "Victoria Memorial Kolkata India",
+      "NAG": "Nagpur India",
+      "CMB": "Colombo Sri Lanka skyline",
+      "MLE": "Maldives aerial turquoise water",
+      "SHJ": "Sharjah UAE skyline",
+      "CGP": "Chittagong Bangladesh",
+      "ISB": "Faisal Mosque Islamabad Pakistan",
+      "KHI": "Karachi Pakistan skyline",
+      "LHE": "Badshahi Mosque Lahore Pakistan",
+      "CDG": "Paris Eiffel Tower night",
+      "FRA": "Frankfurt Germany skyline",
+      "JFK": "New York City skyline night",
     };
 
-    const landmark = CITY_LANDMARKS[iata] || `${searchQuery} famous landmark skyline`;
+    const searchQuery2 = CITY_LANDMARKS[iata] || `${searchQuery} city skyline landmark`;
     
     const searchRes = await axios({
-      method: "POST",
-      url: "https://places.googleapis.com/v1/places:searchText",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": GOOGLE_KEY,
-        "X-Goog-FieldMask": "places.id,places.photos",
+      url: "https://api.unsplash.com/search/photos",
+      params: {
+        query: searchQuery2,
+        per_page: 5,
+        orientation: "landscape",
+        order_by: "relevant",
       },
-      data: { textQuery: landmark }
+      headers: {
+        Authorization: `Client-ID FDMg0AEVWycwezGaeF3qO7316GBeetnvKqHQ3Q7a22w`,
+      }
     });
 
     // Find first place that has photos
@@ -224,7 +232,7 @@ app.get("/city-photo", async (req, res) => {
     if (!placeWithPhoto) return res.status(404).send("No photo found");
 
     const photoName = placeWithPhoto.photos[0].name;
-    const photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&maxWidthPx=1200&key=${GOOGLE_KEY}`;
+    const photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=400&maxWidthPx=800&key=${GOOGLE_KEY}`;
     
     // Proxy the image to avoid CORS issues
     const imageRes = await axios.get(photoUrl, { responseType: "arraybuffer" });
