@@ -170,6 +170,43 @@ app.get("/city-photo", async (req, res) => {
     const GOOGLE_KEY = process.env.GOOGLE_PLACES_KEY;
     const searchQuery = city || iata;
 
+    // Use famous landmarks for better photos
+    const CITY_LANDMARKS = {
+      "RUH": "Kingdom Centre Tower Riyadh",
+      "JED": "Al-Balad Jeddah waterfront",
+      "DXB": "Burj Khalifa Dubai skyline",
+      "AUH": "Sheikh Zayed Grand Mosque Abu Dhabi",
+      "BOM": "Gateway of India Mumbai",
+      "DEL": "India Gate New Delhi",
+      "SIN": "Marina Bay Sands Singapore",
+      "BKK": "Wat Phra Kaew Bangkok temple",
+      "KUL": "Petronas Twin Towers Kuala Lumpur",
+      "BAH": "Bahrain World Trade Center Manama",
+      "DOH": "Museum of Islamic Art Doha Qatar",
+      "MCT": "Sultan Qaboos Grand Mosque Muscat",
+      "KWI": "Kuwait Towers",
+      "DAC": "National Parliament House Dhaka",
+      "LHR": "Tower Bridge London",
+      "NRT": "Mount Fuji Tokyo",
+      "IST": "Hagia Sophia Istanbul",
+      "CAI": "Pyramids of Giza Egypt",
+      "DMM": "King Fahd Causeway Dammam",
+      "MED": "Al-Masjid an-Nabawi Medina",
+      "LKO": "Bara Imambara Lucknow",
+      "IXD": "Allahabad Sangam Prayagraj",
+      "MAA": "Marina Beach Chennai",
+      "BLR": "Vidhana Soudha Bangalore",
+      "HYD": "Charminar Hyderabad",
+      "CCU": "Victoria Memorial Kolkata",
+      "NAG": "Deekshabhoomi Nagpur",
+      "CMB": "Lotus Tower Colombo",
+      "MLE": "Maldives turquoise water resort",
+      "SHJ": "Sharjah waterfront UAE",
+      "CGP": "Chittagong port Bangladesh",
+    };
+
+    const landmark = CITY_LANDMARKS[iata] || `${searchQuery} famous landmark skyline`;
+    
     const searchRes = await axios({
       method: "POST",
       url: "https://places.googleapis.com/v1/places:searchText",
@@ -178,7 +215,7 @@ app.get("/city-photo", async (req, res) => {
         "X-Goog-Api-Key": GOOGLE_KEY,
         "X-Goog-FieldMask": "places.id,places.photos",
       },
-      data: { textQuery: `${searchQuery} city skyline` }
+      data: { textQuery: landmark }
     });
 
     // Find first place that has photos
