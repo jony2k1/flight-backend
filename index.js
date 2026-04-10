@@ -1,6 +1,41 @@
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
+const https = require("https");
+const { parse } = require("csv-parse");
+
+let airportsCache = [];
+
+async function loadAirports() {
+  return new Promise((resolve) => {
+    const airports = [];
+    const url = "https://davidmegginson.github.io/ourairports-data/airports.csv";
+    https.get(url, (res) => {
+      res.pipe(parse({ columns: true, skip_empty_lines: true }))
+        .on("data", (row) => {
+          if (row.iata_code && row.latitude_deg && row.longitude_deg && row.type !== "closed") {
+            airports.push({
+  iata: row.iata_code,
+  name: row.name,
+  city: row.municipality || "",
+  country: row.iso_country,
+  lat: parseFloat(row.latitude_deg),
+  lng: parseFloat(row.longitude_deg),
+  type: row.type,
+});
+          }
+        })
+        .on("end", () => {
+          airportsCache = airports;
+          console.log(`✅ Loaded ${airports.length} airports`);
+          resolve(airports);
+        })
+        .on("error", () => resolve([]));
+    }).on("error", () => resolve([]));
+  });
+}
+
+loadAirports();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -258,19 +293,19 @@ const photo = results.find(p => {
 app.get("/nearby-airports", async (req, res) => {
   try {
     const { lat, lng, limit = 5 } = req.query;
-    const response = await axios.get(
-      `https://api.aviationstack.com/v1/airports?access_key=${API_KEY}&limit=100`
-    );
-    const airports = response.data?.data || [];
-    const withDistance = airports
-      .filter(a => a.latitude && a.longitude)
+    const userLat = parseFloat(lat);
+    const userLng = parseFloat(lng);
+    if (airportsCache.length === 0) await loadAirports();
+    const withDistance = airportsCache
+      .filter(a => a.iata && a.iata.length === 3)
       .map(a => {
-        const dLat = (a.latitude - lat) * Math.PI / 180;
-        const dLng = (a.longitude - lng) * Math.PI / 180;
-        const x = Math.sin(dLat/2)**2 + Math.cos(lat*Math.PI/180)*Math.cos(a.latitude*Math.PI/180)*Math.sin(dLng/2)**2;
+       const dLat = (parseFloat(a.lat) - userLat) * Math.PI / 180;
+const dLng = (parseFloat(a.lng) - userLng) * Math.PI / 180;
+        const x = Math.sin(dLat/2)**2 + Math.cos(userLat*Math.PI/180)*Math.cos(a.lat*Math.PI/180)*Math.sin(dLng/2)**2;
         const dist = Math.round(6371 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x)));
-        return { iata: a.iata_code, name: a.airport_name, city: a.city_iata_code, country: a.country_name, lat: a.latitude, lng: a.longitude, distance: dist };
+        return { ...a, distance: dist };
       })
+      .filter(a => !isNaN(a.distance) && a.distance < 300)
       .sort((a, b) => a.distance - b.distance)
       .slice(0, parseInt(limit));
     res.json({ airports: withDistance });
