@@ -220,12 +220,14 @@ app.get("/city-photo", async (req, res) => {
     const searchQuery2 = CITY_LANDMARKS[iata] || `${searchQuery} city skyline landmark`;
     
     const searchRes = await axios({
-      url: "https://api.unsplash.com/search/photos",
-      params: {
-        query: searchQuery2,
-        per_page: 5,
-        order_by: "relevant",
-      },
+  url: "https://api.unsplash.com/search/photos",
+  params: {
+    query: searchQuery2,
+    per_page: 10,
+    order_by: "relevant",
+    orientation: "landscape",
+    content_filter: "high",
+  },
       headers: {
         Authorization: `Client-ID FDMg0AEVWycwezGaeF3qO7316GBeetnvKqHQ3Q7a22w`,
       }
@@ -235,7 +237,11 @@ app.get("/city-photo", async (req, res) => {
     const results = searchRes.data?.results || [];
     if (!results.length) return res.status(404).json({ url: null });
 
-    const photo = results[0];
+    // Skip photos that look like portraits (tall aspect ratio)
+const photo = results.find(p => {
+  const ratio = p.width / p.height;
+  return ratio > 1.2; // landscape only
+}) || results[0];
     const photoUrl = photo.urls?.regular || photo.urls?.full;
     if (!photoUrl) return res.status(404).json({ url: null });
 
@@ -246,6 +252,30 @@ app.get("/city-photo", async (req, res) => {
   } catch (error) {
     console.error("City photo error:", error.response?.data || error.message);
     res.json({ url: null, error: error.response?.data || error.message });
+  }
+});
+
+app.get("/nearby-airports", async (req, res) => {
+  try {
+    const { lat, lng, limit = 5 } = req.query;
+    const response = await axios.get(
+      `https://api.aviationstack.com/v1/airports?access_key=${API_KEY}&limit=100`
+    );
+    const airports = response.data?.data || [];
+    const withDistance = airports
+      .filter(a => a.latitude && a.longitude)
+      .map(a => {
+        const dLat = (a.latitude - lat) * Math.PI / 180;
+        const dLng = (a.longitude - lng) * Math.PI / 180;
+        const x = Math.sin(dLat/2)**2 + Math.cos(lat*Math.PI/180)*Math.cos(a.latitude*Math.PI/180)*Math.sin(dLng/2)**2;
+        const dist = Math.round(6371 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x)));
+        return { iata: a.iata_code, name: a.airport_name, city: a.city_iata_code, country: a.country_name, lat: a.latitude, lng: a.longitude, distance: dist };
+      })
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, parseInt(limit));
+    res.json({ airports: withDistance });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
