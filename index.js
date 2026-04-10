@@ -19,7 +19,7 @@ const AIRLINE_DOMAINS = [
   "biman-airlines.com", "airarabia.com", "jazeeraairways.com",
   "airvistara.com", "thaiairways.com",
 ];
-
+app.get('/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.get("/airport", async (req, res) => {
   try {
     const { code } = req.query;
