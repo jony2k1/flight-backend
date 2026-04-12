@@ -15,14 +15,14 @@ async function loadAirports() {
         .on("data", (row) => {
           if (row.iata_code && row.latitude_deg && row.longitude_deg && row.type !== "closed") {
             airports.push({
-  iata: row.iata_code,
-  name: row.name,
-  city: row.municipality || "",
-  country: row.iso_country,
-  lat: parseFloat(row.latitude_deg),
-  lng: parseFloat(row.longitude_deg),
-  type: row.type,
-});
+              iata: row.iata_code,
+              name: row.name,
+              city: row.municipality || "",
+              country: row.iso_country,
+              lat: parseFloat(row.latitude_deg),
+              lng: parseFloat(row.longitude_deg),
+              type: row.type,
+            });
           }
         })
         .on("end", () => {
@@ -44,6 +44,7 @@ app.use(cors());
 app.use(express.json());
 
 const API_KEY = "d10d111151530107984df4d86f34f6db";
+const WEATHER_KEY = "bd5e378503939ddaee76f12ad7a97608";
 
 const AIRLINE_DOMAINS = [
   "saudia.com", "goindigo.in", "emirates.com",
@@ -54,7 +55,9 @@ const AIRLINE_DOMAINS = [
   "biman-airlines.com", "airarabia.com", "jazeeraairways.com",
   "airvistara.com", "thaiairways.com",
 ];
+
 app.get('/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
 app.get("/airport", async (req, res) => {
   try {
     const { code } = req.query;
@@ -91,6 +94,43 @@ app.get("/live-flights", async (req, res) => {
     res.json(response.data);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch live flights" });
+  }
+});
+
+// ── WEATHER via backend (no CORS) ──────────────────────────────
+app.get("/weather", async (req, res) => {
+  try {
+    const { city } = req.query;
+    const response = await axios.get(
+      `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${WEATHER_KEY}&units=metric`
+    );
+    res.json(response.data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── REAL DRIVE TIME via Google Maps ────────────────────────────
+app.get("/drive-time", async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const GKEY = process.env.GOOGLE_PLACES_KEY;
+    const response = await axios.get(
+      `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(from)}&destinations=${encodeURIComponent(to)}&mode=driving&language=en&key=${GKEY}`
+    );
+    const el = response.data.rows?.[0]?.elements?.[0];
+    if (el?.status === "OK") {
+      res.json({
+        duration: el.duration.text,
+        distance: el.distance.text,
+        durationSeconds: el.duration.value,
+        distanceMeters: el.distance.value,
+      });
+    } else {
+      res.json({ error: "Route not found", status: el?.status });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -139,7 +179,6 @@ If absolutely no flight info exists return: null` }]
   }
 });
 
-// Nylas fetch emails - fetch all then filter by airline domain
 app.post("/nylas-emails", async (req, res) => {
   try {
     const { grantId } = req.body;
@@ -172,7 +211,6 @@ app.post("/nylas-emails", async (req, res) => {
 
     } while (cursor);
 
-    // Remove duplicates
     const seen = new Set();
     allEmails = allEmails.filter(m => {
       if (seen.has(m.id)) return false;
@@ -180,7 +218,6 @@ app.post("/nylas-emails", async (req, res) => {
       return true;
     });
 
-    // Format for frontend
     const formatted = allEmails.map(m => ({
       id: m.id,
       subject: m.subject || "",
@@ -197,90 +234,62 @@ app.post("/nylas-emails", async (req, res) => {
   }
 });
 
-
-// Google Places city photo endpoint
 app.get("/city-photo", async (req, res) => {
   try {
     const { city, iata } = req.query;
-    const GOOGLE_KEY = process.env.GOOGLE_PLACES_KEY;
     const searchQuery = city || iata;
 
-    // Curated search queries for best landmark photos
     const CITY_LANDMARKS = {
-      "RUH": "Riyadh Saudi Arabia",
-      "JED": "Jeddah Saudi Arabia",
-      "DXB": "Dubai UAE",
-      "AUH": "Abu Dhabi UAE",
-      "BOM": "Mumbai India",
-      "DEL": "New Delhi India",
-      "SIN": "Singapore",
-      "BKK": "Bangkok Thailand",
-      "KUL": "Kuala Lumpur Malaysia",
-      "BAH": "Manama Bahrain",
-      "DOH": "Doha Qatar",
-      "MCT": "Muscat Oman",
-      "KWI": "Kuwait City",
-      "DAC": "Dhaka Bangladesh",
-      "LHR": "London England",
-      "NRT": "Tokyo Japan",
-      "IST": "Istanbul Turkey",
-      "CAI": "Cairo Egypt",
-      "DMM": "Dammam Saudi Arabia",
-      "MED": "Medina Saudi Arabia",
-      "LKO": "Lucknow India",
-      "IXD": "Prayagraj India",
-      "MAA": "Chennai India",
-      "BLR": "Bangalore India",
-      "HYD": "Hyderabad India",
-      "CCU": "Kolkata India",
-      "NAG": "Nagpur India",
-      "CMB": "Colombo Sri Lanka",
-      "MLE": "Maldives",
-      "SHJ": "Sharjah UAE",
-      "CGP": "Chittagong Bangladesh",
-      "ISB": "Islamabad Pakistan",
-      "KHI": "Karachi Pakistan",
-      "LHE": "Lahore Pakistan",
-      "CDG": "Paris France",
-      "FRA": "Frankfurt Germany",
-      "JFK": "New York City",
-      "RAH": "Rafha Saudi Arabia",
-      "AQI": "Qaisumah Saudi Arabia",
-      "TIF": "Taif Saudi Arabia",
-      "GIZ": "Jizan Saudi Arabia",
-      "ABT": "Al Baha Saudi Arabia",
-      "ELQ": "Madinah Saudi Arabia",
+      "RUH": "Riyadh Saudi Arabia", "JED": "Jeddah Saudi Arabia",
+      "DXB": "Dubai UAE", "AUH": "Abu Dhabi UAE",
+      "BOM": "Mumbai India", "DEL": "New Delhi India",
+      "SIN": "Singapore", "BKK": "Bangkok Thailand",
+      "KUL": "Kuala Lumpur Malaysia", "BAH": "Manama Bahrain",
+      "DOH": "Doha Qatar", "MCT": "Muscat Oman",
+      "KWI": "Kuwait City", "DAC": "Dhaka Bangladesh",
+      "LHR": "London England", "NRT": "Tokyo Japan",
+      "IST": "Istanbul Turkey", "CAI": "Cairo Egypt",
+      "DMM": "Dammam Saudi Arabia", "MED": "Medina Saudi Arabia",
+      "LKO": "Lucknow India", "IXD": "Prayagraj India",
+      "MAA": "Chennai India", "BLR": "Bangalore India",
+      "HYD": "Hyderabad India", "CCU": "Kolkata India",
+      "CMB": "Colombo Sri Lanka", "MLE": "Maldives",
+      "SHJ": "Sharjah UAE", "CGP": "Chittagong Bangladesh",
+      "ISB": "Islamabad Pakistan", "KHI": "Karachi Pakistan",
+      "LHE": "Lahore Pakistan", "CDG": "Paris France",
+      "FRA": "Frankfurt Germany", "JFK": "New York City",
+      "RAH": "Rafha Saudi Arabia", "AQI": "Qaisumah Saudi Arabia",
+      "TIF": "Taif Saudi Arabia", "GIZ": "Jizan Saudi Arabia",
+      "ABT": "Al Baha Saudi Arabia", "ELQ": "Madinah Saudi Arabia",
     };
 
     const searchQuery2 = CITY_LANDMARKS[iata] || `${searchQuery} city skyline landmark`;
-    
+
     const searchRes = await axios({
-  url: "https://api.unsplash.com/search/photos",
-  params: {
-    query: searchQuery2,
-    per_page: 10,
-    order_by: "relevant",
-    orientation: "landscape",
-    content_filter: "high",
-  },
+      url: "https://api.unsplash.com/search/photos",
+      params: {
+        query: searchQuery2,
+        per_page: 10,
+        order_by: "relevant",
+        orientation: "landscape",
+        content_filter: "high",
+      },
       headers: {
         Authorization: `Client-ID FDMg0AEVWycwezGaeF3qO7316GBeetnvKqHQ3Q7a22w`,
       }
     });
 
-    // Parse Unsplash response
     const results = searchRes.data?.results || [];
     if (!results.length) return res.status(404).json({ url: null });
 
-    // Skip photos that look like portraits (tall aspect ratio)
-const photo = results.find(p => {
-  const ratio = p.width / p.height;
-  return ratio > 1.2; // landscape only
-}) || results[0];
+    const photo = results.find(p => {
+      const ratio = p.width / p.height;
+      return ratio > 1.2;
+    }) || results[0];
+
     const photoUrl = photo.urls?.regular || photo.urls?.full;
     if (!photoUrl) return res.status(404).json({ url: null });
 
-    // Return URL directly — no proxying needed, Unsplash URLs work in browser!
     res.set("Cache-Control", "public, max-age=86400");
     res.json({ url: photoUrl });
 
@@ -299,8 +308,8 @@ app.get("/nearby-airports", async (req, res) => {
     const withDistance = airportsCache
       .filter(a => a.iata && a.iata.length === 3)
       .map(a => {
-       const dLat = (parseFloat(a.lat) - userLat) * Math.PI / 180;
-const dLng = (parseFloat(a.lng) - userLng) * Math.PI / 180;
+        const dLat = (parseFloat(a.lat) - userLat) * Math.PI / 180;
+        const dLng = (parseFloat(a.lng) - userLng) * Math.PI / 180;
         const x = Math.sin(dLat/2)**2 + Math.cos(userLat*Math.PI/180)*Math.cos(a.lat*Math.PI/180)*Math.sin(dLng/2)**2;
         const dist = Math.round(6371 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x)));
         return { ...a, distance: dist };
@@ -321,10 +330,11 @@ app.get("/", (req, res) => {
 app.get("/debug-key", (req, res) => {
   res.json({ key: process.env.ANTHROPIC_KEY ? process.env.ANTHROPIC_KEY.substring(0, 20) + "..." : "NOT SET" });
 });
+
 app.post("/trip-plan", async (req, res) => {
   try {
     const { destination, fromCity, duration, month, budget, tripType } = req.body;
-    const prompt = `You are an expert travel planner. Destination: ${destination}, From: ${fromCity}, Duration: ${duration}, Month: ${month}, Budget: ${budget}, Trip type: ${tripType}. Return ONLY valid JSON no markdown: {"destination":"city","country":"country","tagline":"inspiring tagline","description":"2-3 human inspiring lines","weather":"weather in ${month}","visa":"visa info for Saudi/GCC passport","currency":"local currency and SAR rate","language":"local language and 2 useful phrases","timezone":"UTC offset","bestTime":"is ${month} good and why","travelVibe":"Relax/Adventure/Luxury/City Life","estimatedBudget":{"flightLocal":"price range in local currency","hotelPerNight":"price per night in local currency","dailySpend":"daily spend in local currency","totalTrip":"total trip estimate in local currency"},"attractions":[{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"},{"name":"name","desc":"1 line","emoji":"emoji","type":"hidden-gem"},{"name":"name","desc":"1 line","emoji":"emoji","type":"food"},{"name":"name","desc":"1 line","emoji":"emoji","type":"activity"},{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"}],"nearbyDestinations":[{"city":"city","country":"country","emoji":"emoji","reason":"why visit"},{"city":"city","country":"country","emoji":"emoji","reason":"why"},{"city":"city","country":"country","emoji":"emoji","reason":"why"}],"hotelAreas":["area1","area2","area3"],"foodMustTry":["dish1","dish2","dish3"],"packingList":{"essential":["item1","item2","item3"],"clothing":["item1","item2","item3"],"documents":["item1","item2"]},"dayPlan":[{"day":1,"title":"Arrival","activities":["act1","act2","act3"]},{"day":2,"title":"Explore","activities":["act1","act2","act3"]},{"day":3,"title":"Hidden Gems","activities":["act1","act2","act3"]}],"tips":["tip1","tip2","tip3"],"moodTips":{"Relax":["relax tip specific to destination 1","tip2","tip3"],"Adventure":["adventure tip specific to destination 1","tip2","tip3"],"Budget":["budget tip specific to destination 1","tip2","tip3"],"Luxury":["luxury tip specific to destination 1","tip2","tip3"]}}`;
+    const prompt = `You are an expert travel planner. Destination: ${destination}, From: ${fromCity}, Duration: ${duration}, Month: ${month}, Budget: ${budget}, Trip type: ${tripType}. Return ONLY valid JSON no markdown: {"destination":"city","country":"country","tagline":"inspiring tagline","description":"2-3 human inspiring lines","weather":"weather in ${month}","visa":"visa info for Saudi/GCC passport","currency":"local currency name and symbol only like AED, THB, GBP","language":"local language and 2 useful phrases","timezone":"UTC offset","bestTime":"is ${month} good and why","travelVibe":"Relax/Adventure/Luxury/City Life","estimatedBudget":{"flightLocal":"price range in local currency with symbol","hotelPerNight":"price per night in local currency with symbol","dailySpend":"daily spend in local currency with symbol","totalTrip":"total trip estimate in local currency with symbol"},"attractions":[{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"},{"name":"name","desc":"1 line","emoji":"emoji","type":"hidden-gem"},{"name":"name","desc":"1 line","emoji":"emoji","type":"food"},{"name":"name","desc":"1 line","emoji":"emoji","type":"activity"},{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"}],"nearbyDestinations":[{"city":"city","country":"country","emoji":"emoji","reason":"why visit"},{"city":"city","country":"country","emoji":"emoji","reason":"why"},{"city":"city","country":"country","emoji":"emoji","reason":"why"}],"hotelAreas":["area1","area2","area3"],"foodMustTry":["dish1","dish2","dish3"],"packingList":{"essential":["item1","item2","item3"],"clothing":["item1","item2","item3"],"documents":["item1","item2"]},"dayPlan":[{"day":1,"title":"Arrival","activities":["act1","act2","act3"]},{"day":2,"title":"Explore","activities":["act1","act2","act3"]},{"day":3,"title":"Hidden Gems","activities":["act1","act2","act3"]}],"tips":["tip1","tip2","tip3"],"moodTips":{"Relax":["destination specific relax tip1","tip2","tip3"],"Adventure":["destination specific adventure tip1","tip2","tip3"],"Budget":["destination specific budget tip1","tip2","tip3"],"Luxury":["destination specific luxury tip1","tip2","tip3"]}}`;
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       { model: "claude-haiku-4-5", max_tokens: 2000, messages: [{ role: "user", content: prompt }] },
@@ -337,6 +347,7 @@ app.post("/trip-plan", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
