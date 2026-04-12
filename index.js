@@ -347,7 +347,23 @@ app.post("/trip-plan", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.get("/geocode", async (req, res) => {
+  try {
+    const { city } = req.query;
+    const r = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${WEATHER_KEY}`);
+    res.json(r.data[0] || null);
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
 
+app.get("/aqi", async (req, res) => {
+  try {
+    const { lat, lon } = req.query;
+    const r = await axios.get(`https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${WEATHER_KEY}`);
+    const aqi = r.data.list[0];
+    const labels = ["", "Good 🟢", "Fair 🟡", "Moderate 🟠", "Poor 🔴", "Very Poor 🟣"];
+    res.json({ aqi: aqi.main.aqi, label: labels[aqi.main.aqi], pm25: aqi.components.pm2_5, pm10: aqi.components.pm10 });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
