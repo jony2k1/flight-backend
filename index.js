@@ -364,6 +364,67 @@ app.get("/aqi", async (req, res) => {
     res.json({ aqi: aqi.main.aqi, label: labels[aqi.main.aqi], pm25: aqi.components.pm2_5, pm10: aqi.components.pm10 });
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
+// Gmail fetch using user's Google token
+app.post("/gmail-emails", async (req, res) => {
+  try {
+    const { accessToken } = req.body;
+    if (!accessToken) return res.status(400).json({ error: "No access token" });
+
+    const AIRLINE_DOMAINS = [
+      "saudia.com", "flynas.com", "flyadeal.com", "emirates.com",
+      "etihad.com", "flydubai.com", "gulfair.com", "airindia.in",
+      "goindigo.in", "kuwaitairways.com", "omanair.com", "spicejet.com",
+      "flyscoot.com", "airarabia.com", "jazeeraairways.com",
+      "qatarairways.com", "turkishairlines.com", "egyptair.com",
+      "biman-airlines.com", "thaiairways.com", "malaysiaairlines.com",
+    ];
+
+    const query = AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ");
+    
+    // Search Gmail for airline emails
+    const searchRes = await axios.get(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=500`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+
+    const messages = searchRes.data.messages || [];
+    if (!messages.length) return res.json({ emails: [], total: 0 });
+
+    // Fetch each email details
+    const emails = [];
+    for (const msg of messages.slice(0, 200)) {
+      try {
+        const detail = await axios.get(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const headers = detail.data.payload?.headers || [];
+        const subject = headers.find(h => h.name === "Subject")?.value || "";
+        const from = headers.find(h => h.name === "From")?.value || "";
+        const date = headers.find(h => h.name === "Date")?.value || "";
+        
+        // Get body
+        let body = "";
+        const parts = detail.data.payload?.parts || [detail.data.payload];
+        for (const part of parts) {
+          if (part?.mimeType === "text/plain" && part?.body?.data) {
+            body = Buffer.from(part.body.data, "base64").toString("utf-8").slice(0, 2000);
+            break;
+          }
+        }
+        if (!body && detail.data.payload?.body?.data) {
+          body = Buffer.from(detail.data.payload.body.data, "base64").toString("utf-8").slice(0, 2000);
+        }
+
+        emails.push({ id: msg.id, subject, from, body, date });
+      } catch {}
+    }
+
+    res.json({ emails, total: emails.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
