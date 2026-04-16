@@ -405,15 +405,37 @@ app.post("/gmail-emails", async (req, res) => {
         
         // Get body
         let body = "";
-        const parts = detail.data.payload?.parts || [detail.data.payload];
-        for (const part of parts) {
+        // Get body
+        let body = "";
+        const allParts = [];
+        function collectParts(payload) {
+          if (!payload) return;
+          if (payload.parts) payload.parts.forEach(collectParts);
+          else allParts.push(payload);
+          if (payload.body?.data) allParts.push(payload);
+        }
+        collectParts(detail.data.payload);
+
+        // Try text/plain first
+        for (const part of allParts) {
           if (part?.mimeType === "text/plain" && part?.body?.data) {
-            body = Buffer.from(part.body.data, "base64").toString("utf-8").slice(0, 2000);
+            body = Buffer.from(part.body.data, "base64").toString("utf-8").slice(0, 3000);
             break;
           }
         }
+        // Fall back to HTML — strip tags
+        if (!body) {
+          for (const part of allParts) {
+            if (part?.mimeType === "text/html" && part?.body?.data) {
+              const html = Buffer.from(part.body.data, "base64").toString("utf-8");
+              body = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 3000);
+              break;
+            }
+          }
+        }
+        // Last resort — top level body
         if (!body && detail.data.payload?.body?.data) {
-          body = Buffer.from(detail.data.payload.body.data, "base64").toString("utf-8").slice(0, 2000);
+          body = Buffer.from(detail.data.payload.body.data, "base64").toString("utf-8").slice(0, 3000);
         }
 
         emails.push({ id: msg.id, subject, from, body, date });
