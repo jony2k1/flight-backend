@@ -383,7 +383,7 @@ app.post("/gmail-emails", async (req, res) => {
     
     // Search Gmail for airline emails
     const searchRes = await axios.get(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=500`,
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=500&pageToken=`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
@@ -392,7 +392,7 @@ app.post("/gmail-emails", async (req, res) => {
 
     // Fetch each email details
     const emails = [];
-    for (const msg of messages.slice(0, 200)) {
+    for (const msg of messages.slice(0, 500)) {
       try {
         const detail = await axios.get(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
