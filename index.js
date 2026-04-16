@@ -403,9 +403,6 @@ app.post("/gmail-emails", async (req, res) => {
         const from = headers.find(h => h.name === "From")?.value || "";
         const date = headers.find(h => h.name === "Date")?.value || "";
         
-        // Get body
-        let body = "";
-        // Get body
         let body = "";
         const allParts = [];
         function collectParts(payload) {
