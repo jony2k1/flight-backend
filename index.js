@@ -380,19 +380,22 @@ app.post("/gmail-emails", async (req, res) => {
     ];
 
     const query = AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ");
-    
-    // Search Gmail for airline emails
-    const searchRes = await axios.get(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=500&pageToken=`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
 
-    const messages = searchRes.data.messages || [];
-    if (!messages.length) return res.json({ emails: [], total: 0 });
+    let allMessages = [];
+    let pageToken = null;
 
-    // Fetch each email details
+    do {
+      const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=500${pageToken ? `&pageToken=${pageToken}` : ""}`;
+      const searchRes = await axios.get(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const msgs = searchRes.data.messages || [];
+      allMessages = [...allMessages, ...msgs];
+      pageToken = searchRes.data.nextPageToken || null;
+    } while (pageToken);
+
+    if (!allMessages.length) return res.json({ emails: [], total: 0 });
+
     const emails = [];
-    for (const msg of messages.slice(0, 500)) {
+    for (const msg of allMessages) {
       try {
         const detail = await axios.get(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
@@ -402,7 +405,7 @@ app.post("/gmail-emails", async (req, res) => {
         const subject = headers.find(h => h.name === "Subject")?.value || "";
         const from = headers.find(h => h.name === "From")?.value || "";
         const date = headers.find(h => h.name === "Date")?.value || "";
-        
+
         let body = "";
         const allParts = [];
         function collectParts(payload) {
@@ -413,14 +416,12 @@ app.post("/gmail-emails", async (req, res) => {
         }
         collectParts(detail.data.payload);
 
-        // Try text/plain first
         for (const part of allParts) {
           if (part?.mimeType === "text/plain" && part?.body?.data) {
             body = Buffer.from(part.body.data, "base64").toString("utf-8").slice(0, 3000);
             break;
           }
         }
-        // Fall back to HTML — strip tags
         if (!body) {
           for (const part of allParts) {
             if (part?.mimeType === "text/html" && part?.body?.data) {
@@ -430,7 +431,6 @@ app.post("/gmail-emails", async (req, res) => {
             }
           }
         }
-        // Last resort — top level body
         if (!body && detail.data.payload?.body?.data) {
           body = Buffer.from(detail.data.payload.body.data, "base64").toString("utf-8").slice(0, 3000);
         }
@@ -444,6 +444,7 @@ app.post("/gmail-emails", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
