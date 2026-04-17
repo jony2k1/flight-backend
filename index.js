@@ -142,28 +142,28 @@ app.post("/extract-flight", async (req, res) => {
       {
         model: "claude-haiku-4-5",
         max_tokens: 1000,
-        messages: [{ role: "user", content: `You extract flight booking data from airline emails. Be VERY generous - extract ANY flight information you can find.
+        messages: [{ role: "user", content: `You extract flight booking data from airline emails. Extract ALL flights found - if email has multiple flights return a JSON array.
 
 Subject: ${subject}
 From: ${from}
 Body: ${body}
 
-Look for: flight numbers (SV123, EK204, 6E456, GF64, JAI123 etc), airport codes (RUH, BOM, DXB, DEL etc), dates, times, seat numbers, booking codes.
+IMPORTANT RULES:
+- IndiGo emails use city names - convert to IATA: Mumbai=BOM, Delhi=DEL, Bangalore=BLR, Hyderabad=HYD, Chennai=MAA, Kolkata=CCU, Ahmedabad=AMD, Kochi=COK, Goa=GOI, Jaipur=JAI, Lucknow=LKO, Amritsar=ATQ, Chandigarh=IXC, Pune=PNQ, Vadodara=BDQ
+- Saudia emails may be in Arabic - still extract flight data
+- Look for PNR codes, booking references, e-ticket numbers
+- For round trips extract BOTH flights as array
+- Dates may be in any format - convert to YYYY-MM-DD
+- Even old emails from 2013, 2014, 2015 - still extract
 
-These are booking confirmation emails from airlines like Saudia, IndiGo, Emirates, Gulf Air, Jazeera, Air Arabia, Etihad, FlyDubai, Kuwait Airways, Oman Air, Flynas, Scoot, SpiceJet, Air India, Akasa, Vistara, GoAir, Biman.
-
-Extract flight details from booking confirmations and e-tickets only. Skip OTP, miles rewards, lounge invites, refunds, and promotional emails. If email has no actual flight booking return null.
-Even if email is old (2014, 2015, 2016...) still extract.
-Even if subject is in Arabic - still extract flight data from body.
-
-Return ONLY JSON (no extra text, no markdown), examples:
-{"flightNumber":"SV1487","from":"RUH","to":"AQI","fromCity":"Riyadh","toCity":"Qaisumah","date":"2026-02-13","seat":"5L","airline":"Saudia","departure":"15:40","arrival":"16:50"}
+Return ONLY JSON, no markdown. Single flight:
 {"flightNumber":"6E456","from":"DEL","to":"BOM","fromCity":"Delhi","toCity":"Mumbai","date":"2019-05-10","seat":"12A","airline":"IndiGo","departure":"06:00","arrival":"08:10"}
-{"flightNumber":"EK204","from":"DXB","to":"BOM","fromCity":"Dubai","toCity":"Mumbai","date":"2021-03-15","seat":"34B","airline":"Emirates","departure":"14:20","arrival":"18:30"}
-{"flightNumber":"GF64","from":"BAH","to":"BOM","fromCity":"Bahrain","toCity":"Mumbai","date":"2023-11-20","seat":"19F","airline":"Gulf Air","departure":"14:30","arrival":"20:55"}
-{"flightNumber":"JAI123","from":"KWI","to":"DXB","fromCity":"Kuwait","toCity":"Dubai","date":"2022-08-05","seat":"8C","airline":"Jazeera Airways","departure":"10:00","arrival":"11:30"}
 
-If absolutely no flight info exists return: null` }]
+Multiple flights as array:
+[{"flightNumber":"6E456","from":"DEL","to":"BOM","fromCity":"Delhi","toCity":"Mumbai","date":"2019-05-10","seat":"12A","airline":"IndiGo","departure":"06:00","arrival":"08:10"},{"flightNumber":"6E457","from":"BOM","to":"DEL","fromCity":"Mumbai","toCity":"Delhi","date":"2019-05-15","seat":"14B","airline":"IndiGo","departure":"09:00","arrival":"11:10"}]
+
+Skip: OTP emails, miles/rewards, lounge invites, promotional offers, flight status updates.
+If no booking found return: null` }]
       },
       {
         headers: {
@@ -379,7 +379,7 @@ app.post("/gmail-emails", async (req, res) => {
       "biman-airlines.com", "thaiairways.com", "malaysiaairlines.com",
     ];
 
-    const query = AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ");
+    const query = AIRLINE_DOMAINS.map(d => `from:${d} (subject:booking OR subject:confirmation OR subject:ticket OR subject:itinerary OR subject:e-ticket OR subject:reservation OR subject:"boarding pass" OR subject:PNR OR subject:"booking ref")`).join(" OR ");
 
     let allMessages = [];
     let pageToken = null;
