@@ -395,7 +395,7 @@ app.post("/gmail-emails", async (req, res) => {
     if (!allMessages.length) return res.json({ emails: [], total: 0 });
 
     const emails = [];
-    for (const msg of allMessages) {
+    for (const msg of allMessages.slice(0, 50)) {
       try {
         const detail = await axios.get(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
