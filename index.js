@@ -373,13 +373,13 @@ app.post("/gmail-emails", async (req, res) => {
     const AIRLINE_DOMAINS = [
       "saudia.com", "flynas.com", "flyadeal.com", "emirates.com",
       "etihad.com", "flydubai.com", "gulfair.com", "airindia.in",
-      "goindigo.in", "kuwaitairways.com", "omanair.com", "spicejet.com",
+      "goindigo.in", "customer.goindigo.in", "notification.saudia.com", "kuwaitairways.com", "omanair.com", "spicejet.com",
       "flyscoot.com", "airarabia.com", "jazeeraairways.com",
       "qatarairways.com", "turkishairlines.com", "egyptair.com",
       "biman-airlines.com", "thaiairways.com", "malaysiaairlines.com",
     ];
 
-    const query = AIRLINE_DOMAINS.map(d => `from:${d} (subject:booking OR subject:confirmation OR subject:ticket OR subject:itinerary OR subject:e-ticket OR subject:reservation OR subject:"boarding pass" OR subject:PNR OR subject:"booking ref")`).join(" OR ");
+    const query = AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ");
 
     let allMessages = [];
     let pageToken = null;
