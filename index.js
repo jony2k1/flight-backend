@@ -373,7 +373,7 @@ app.post("/gmail-emails", async (req, res) => {
     const AIRLINE_DOMAINS = [
       "saudia.com", "flynas.com", "flyadeal.com", "emirates.com",
       "etihad.com", "flydubai.com", "gulfair.com", "airindia.in",
-      "goindigo.in", "customer.goindigo.in", "notification.saudia.com", "kuwaitairways.com", "omanair.com", "spicejet.com",
+      "goindigo.in", "customer.goindigo.in", "notification.saudia.com", "emirates.email", "itinerary.flyscoot.com", "kuwaitairways.com", "omanair.com", "spicejet.com",
       "flyscoot.com", "airarabia.com", "jazeeraairways.com",
       "qatarairways.com", "turkishairlines.com", "egyptair.com",
       "biman-airlines.com", "thaiairways.com", "malaysiaairlines.com",
