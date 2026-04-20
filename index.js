@@ -445,6 +445,44 @@ app.post("/gmail-emails", async (req, res) => {
   }
 });
 
+
+app.post("/travel-dna", async (req, res) => {
+  try {
+    const { stats } = req.body;
+    const prompt = `You are a witty, poetic travel personality analyzer. Based on this traveler's real flight data, create their unique Travel DNA profile.
+
+FLIGHT DATA:
+- Total flights: ${stats.totalFlights}
+- Total km: ${stats.totalKm}
+- Countries visited: ${stats.countries.join(", ")}
+- Top airline: ${stats.topAirline} (${stats.topAirlineCount} flights)
+- Second airline: ${stats.secondAirline || "none"}
+- Most flown route: ${stats.topRoute}
+- Average flight distance: ${stats.avgKm} km
+- Favorite day to fly: ${stats.favoriteDay}
+- Favorite month: ${stats.favoriteMonth}
+- Short haul % (under 1500km): ${stats.shortHaulPct}%
+- Long haul % (over 5000km): ${stats.longHaulPct}%
+- Years flying: ${stats.yearsFlying}
+- Most visited city: ${stats.topCity}
+- Total days in air: ${stats.daysInAir}
+
+Return ONLY valid JSON, no markdown:
+{"title":"THE GULF NOMAD","subtitle":"Short-Haul Royalty","poem":["Line 1 poetic max 8 words","Line 2 poetic max 8 words","Line 3 poetic max 8 words","Line 4 poetic max 8 words"],"traits":[{"emoji":"🕐","label":"Thursday Night Flyer","detail":"34% of flights"},{"emoji":"🛫","label":"Short Haul Addict","detail":"avg 892 km"},{"emoji":"🔁","label":"Route Loyalist","detail":"RUH↔BOM x 12"},{"emoji":"✈️","label":"Saudia Faithful","detail":"81 flights 38%"},{"emoji":"🌍","label":"Gulf Resident","detail":"68% GCC routes"}],"dnaScores":{"Loyalty":78,"Adventure":42,"Distance":18,"Frequency":91,"Explorer":35},"funFact":"One surprising funny insight in 1 sentence"}`;
+
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      { model: "claude-haiku-4-5", max_tokens: 1000, messages: [{ role: "user", content: prompt }] },
+      { headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" } }
+    );
+    const text = response.data.content[0].text;
+    const clean = text.replace(/```json\n?|```\n?/g, "").trim();
+    res.json(JSON.parse(clean));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
