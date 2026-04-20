@@ -49,7 +49,7 @@ const WEATHER_KEY = "bd5e378503939ddaee76f12ad7a97608";
 const AIRLINE_DOMAINS = [
   "saudia.com", "goindigo.in", "emirates.com",
   "travel-akasaair.in", "etihad.com", "flydubai.com",
-  "gulfair.com", "airindia.in", "kuwaitairways.com",
+  "gulfair.com", "airindia.in", "airindia.com", "goair.in", "jetairways.com", "kuwaitairways.com",
   "omanair.com", "spicejet.com", "goair.in",
   "flyscoot.com", "flynas.com", "flyadeal.com",
   "biman-airlines.com", "airarabia.com", "jazeeraairways.com",
