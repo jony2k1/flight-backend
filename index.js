@@ -327,9 +327,7 @@ app.get("/", (req, res) => {
   res.json({ message: "✈️ Flight Backend Running with Nylas!" });
 });
 
-app.get("/debug-key", (req, res) => {
-  res.json({ key: process.env.ANTHROPIC_KEY ? process.env.ANTHROPIC_KEY.substring(0, 20) + "..." : "NOT SET" });
-});
+// debug-key endpoint removed for security
 
 app.post("/trip-plan", async (req, res) => {
   try {
