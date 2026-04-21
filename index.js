@@ -539,17 +539,43 @@ app.get("/flight-info", async (req, res) => {
 
 app.get("/aircraft-photo", async (req, res) => {
   try {
-    const { reg } = req.query;
-    if (!reg) return res.status(400).json({ error: "Registration required" });
-    const response = await axios.get(`https://api.planespotters.net/pub/photos/reg/${reg.toUpperCase()}`);
-    const photos = response.data?.photos;
-    if (!photos || photos.length === 0) return res.json({ found: false });
-    res.json({
-      found: true,
-      thumbnail: photos[0].thumbnail_large?.src || photos[0].thumbnail?.src,
-      link: photos[0].link,
-      photographer: photos[0].photographer,
-    });
+    const { reg, airline } = req.query;
+
+    // Try 1: exact registration
+    if (reg) {
+      try {
+        const r = await axios.get(`https://api.planespotters.net/pub/photos/reg/${reg.toUpperCase()}`);
+        const photos = r.data?.photos;
+        if (photos && photos.length > 0) {
+          return res.json({
+            found: true,
+            thumbnail: photos[0].thumbnail_large?.src || photos[0].thumbnail?.src,
+            photographer: photos[0].photographer,
+            source: "registration",
+          });
+        }
+      } catch(e) {}
+    }
+
+    // Try 2: airline code
+    if (airline) {
+      try {
+        const r = await axios.get(`https://api.planespotters.net/pub/photos/airline/${airline.toUpperCase()}`);
+        const photos = r.data?.photos;
+        if (photos && photos.length > 0) {
+          // Pick random photo for variety
+          const pick = photos[Math.floor(Math.random() * Math.min(photos.length, 5))];
+          return res.json({
+            found: true,
+            thumbnail: pick.thumbnail_large?.src || pick.thumbnail?.src,
+            photographer: pick.photographer,
+            source: "airline",
+          });
+        }
+      } catch(e) {}
+    }
+
+    res.json({ found: false });
   } catch (err) { res.json({ found: false, error: err.message }); }
 });
 
