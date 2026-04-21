@@ -595,6 +595,35 @@ app.get("/aircraft-photo", async (req, res) => {
   } catch (err) { res.json({ found: false, error: err.message }); }
 });
 
+
+app.get("/route-flights", async (req, res) => {
+  try {
+    const { from, to, date } = req.query;
+    if (!from || !to) return res.status(400).json({ error: "from and to required" });
+    const useDate = date || new Date().toISOString().slice(0,10);
+    const response = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/flights/airports/iata/${from}/${useDate}T00:00/${useDate}T23:59`,
+      {
+        params: { withLeg: true, direction: "Departure", withCancelled: false, withCodeshared: false, withCargo: false },
+        headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" }
+      }
+    );
+    const flights = response.data?.departures || [];
+    const matching = flights
+      .filter(f => f.arrival?.airport?.iata === to.toUpperCase())
+      .map(f => ({
+        number: f.number,
+        airline: f.airline?.name || "",
+        dep: f.departure?.scheduledTime?.local || "",
+        arr: f.arrival?.scheduledTime?.local || "",
+        status: f.status || "",
+      }));
+    res.json({ flights: matching });
+  } catch(err) {
+    res.json({ flights: [], error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
