@@ -512,22 +512,6 @@ app.get("/flight-info", async (req, res) => {
       } catch(e) {}
     }
     if (!flight) return // Final fallback: Unsplash source (always works, no key needed)
-    const airlineNames2 = {
-      'EK':'Emirates','SV':'Saudia','QR':'Qatar Airways','EY':'Etihad',
-      '6E':'IndiGo','AI':'Air India','TK':'Turkish Airlines','BA':'British Airways',
-      'XY':'flynas','FZ':'flydubai','F3':'Flyadeal','WY':'Oman Air',
-      'GF':'Gulf Air','G9':'Air Arabia','KU':'Kuwait Airways','LH':'Lufthansa',
-      'AF':'Air France','KL':'KLM','SQ':'Singapore Airlines',
-    };
-    const aName = airlineNames2[req.query.airline?.toUpperCase()] || 'airplane';
-    const aType = req.query.aircraft?.split(' ').slice(0,2).join(' ') || 'aircraft';
-    const q = encodeURIComponent(aName + ' ' + aType + ' airplane');
-    return res.json({
-      found: true,
-      thumbnail: `https://source.unsplash.com/800x450/?${q}`,
-      photographer: 'Unsplash',
-      source: 'unsplash_public',
-    });
     const schedDep = flight.departure?.scheduledTime?.utc;
     const revisedDep = flight.departure?.revisedTime?.utc;
     let delayMinutes = 0;
