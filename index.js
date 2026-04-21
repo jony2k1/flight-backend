@@ -511,7 +511,23 @@ app.get("/flight-info", async (req, res) => {
         if (Array.isArray(data) && data.length > 0) { flight = data[0]; break; }
       } catch(e) {}
     }
-    if (!flight) return res.json({ found: false });
+    if (!flight) return // Final fallback: Unsplash source (always works, no key needed)
+    const airlineNames2 = {
+      'EK':'Emirates','SV':'Saudia','QR':'Qatar Airways','EY':'Etihad',
+      '6E':'IndiGo','AI':'Air India','TK':'Turkish Airlines','BA':'British Airways',
+      'XY':'flynas','FZ':'flydubai','F3':'Flyadeal','WY':'Oman Air',
+      'GF':'Gulf Air','G9':'Air Arabia','KU':'Kuwait Airways','LH':'Lufthansa',
+      'AF':'Air France','KL':'KLM','SQ':'Singapore Airlines',
+    };
+    const aName = airlineNames2[req.query.airline?.toUpperCase()] || 'airplane';
+    const aType = req.query.aircraft?.split(' ').slice(0,2).join(' ') || 'aircraft';
+    const q = encodeURIComponent(aName + ' ' + aType + ' airplane');
+    return res.json({
+      found: true,
+      thumbnail: `https://source.unsplash.com/800x450/?${q}`,
+      photographer: 'Unsplash',
+      source: 'unsplash_public',
+    });
     const schedDep = flight.departure?.scheduledTime?.utc;
     const revisedDep = flight.departure?.revisedTime?.utc;
     let delayMinutes = 0;
@@ -546,109 +562,82 @@ app.get("/aircraft-photo", async (req, res) => {
   try {
     const { reg, airline, aircraft } = req.query;
 
-    // Try 1: Planespotters by exact registration
-    if (reg && reg.trim()) {
+    const AIRLINE_NAMES = {
+      'EK':'Emirates','SV':'Saudia','QR':'Qatar Airways','EY':'Etihad Airways',
+      '6E':'IndiGo','AI':'Air India','TK':'Turkish Airlines','BA':'British Airways',
+      'XY':'flynas','FZ':'flydubai','F3':'Flyadeal','WY':'Oman Air',
+      'GF':'Gulf Air','G9':'Air Arabia','KU':'Kuwait Airways','LH':'Lufthansa',
+      'AF':'Air France','KL':'KLM','SQ':'Singapore Airlines','CX':'Cathay Pacific',
+      'J9':'Jazeera Airways','BG':'Biman Bangladesh','SG':'SpiceJet','TG':'Thai Airways',
+    };
+
+    // Try 1: Planespotters by exact registration (most accurate)
+    if (reg && reg.trim().length > 3) {
       try {
-        const r = await axios.get(`https://api.planespotters.net/pub/photos/reg/${reg.toUpperCase().trim()}`, { timeout: 5000 });
+        const r = await axios.get(
+          `https://api.planespotters.net/pub/photos/reg/${reg.toUpperCase().trim()}`,
+          { timeout: 6000, headers: { 'User-Agent': 'FlowntoApp/1.0' } }
+        );
         const photos = r.data?.photos;
         if (photos && photos.length > 0) {
+          const p = photos[0];
           return res.json({
             found: true,
-            thumbnail: photos[0].thumbnail_large?.src || photos[0].thumbnail?.src,
-            photographer: photos[0].photographer,
-            aircraft: photos[0].aircraft?.model || "",
-            source: "registration",
+            thumbnail: p.thumbnail_large?.src || p.thumbnail?.src,
+            photographer: p.photographer || 'Planespotters',
+            aircraft: p.aircraft?.model || '',
+            source: 'registration',
           });
         }
-      } catch(e) {}
+      } catch(e) { console.log('Planespotters reg failed:', e.message); }
     }
 
-    // Try 2: Planespotters by airline IATA code
-    if (airline && airline.trim()) {
+    // Try 2: Unsplash with API key (high quality, specific)
+    const UNSPLASH_KEY = process.env.UNSPLASH_ACCESS_KEY;
+    if (UNSPLASH_KEY) {
       try {
-        const r = await axios.get(`https://api.planespotters.net/pub/photos/airline/${airline.toUpperCase().trim()}`, { timeout: 5000 });
-        const photos = r.data?.photos;
-        if (photos && photos.length > 0) {
-          // Pick a photo matching aircraft type if possible
-          let best = photos[0];
-          if (aircraft) {
-            const match = photos.find(p => p.aircraft?.model?.toLowerCase().includes(aircraft.toLowerCase().split(" ")[1] || ""));
-            if (match) best = match;
-          }
+        const airlineName = AIRLINE_NAMES[airline?.toUpperCase()] || airline || '';
+        const aircraftType = aircraft?.split(' ').slice(0, 2).join(' ') || '';
+        const query = `${airlineName} ${aircraftType} airplane`.trim();
+        const r = await axios.get('https://api.unsplash.com/search/photos', {
+          params: { query, per_page: 3, orientation: 'landscape' },
+          headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` },
+          timeout: 5000,
+        });
+        const results = r.data?.results;
+        if (results && results.length > 0) {
+          const photo = results[0];
           return res.json({
             found: true,
-            thumbnail: best.thumbnail_large?.src || best.thumbnail?.src,
-            photographer: best.photographer,
-            aircraft: best.aircraft?.model || "",
-            source: "airline_fleet",
+            thumbnail: photo.urls?.regular || photo.urls?.small,
+            photographer: photo.user?.name || 'Unsplash',
+            source: 'unsplash',
           });
         }
-      } catch(e) {}
+      } catch(e) { console.log('Unsplash API failed:', e.message); }
     }
 
-    // Try 3: Unsplash — high quality aviation photos
-    if (airline || aircraft) {
-      try {
-        const UNSPLASH_KEY = process.env.UNSPLASH_ACCESS_KEY;
-        if (UNSPLASH_KEY) {
-          // Build search query
-          const airlineNames = {
-            "EK": "Emirates", "SV": "Saudia", "6E": "IndiGo", "AI": "Air India",
-            "QR": "Qatar Airways", "EY": "Etihad", "FZ": "flydubai", "XY": "flynas",
-            "WY": "Oman Air", "GF": "Gulf Air", "G9": "Air Arabia", "KU": "Kuwait Airways",
-            "TK": "Turkish Airlines", "BA": "British Airways", "LH": "Lufthansa",
-            "AF": "Air France", "KL": "KLM", "J9": "Jazeera", "F3": "Flyadeal",
-            "BG": "Biman Bangladesh", "SG": "SpiceJet", "TG": "Thai Airways",
-            "SQ": "Singapore Airlines", "CX": "Cathay Pacific",
-          };
-          const airlineName = airlineNames[airline?.toUpperCase()] || airline || "";
-          const aircraftType = aircraft?.split(" ").slice(0,2).join(" ") || "";
-          const query = `${airlineName} ${aircraftType} airplane`.trim();
+    // Try 3: Unsplash Source (no API key needed — always works)
+    const airlineName = AIRLINE_NAMES[airline?.toUpperCase()] || 'airplane';
+    const aircraftShort = aircraft ? aircraft.split(' ').slice(0, 2).join(' ') : 'aircraft';
+    const query = encodeURIComponent(`${airlineName} ${aircraftShort}`);
+    return res.json({
+      found: true,
+      thumbnail: `https://source.unsplash.com/800x450/?${query}`,
+      photographer: 'Unsplash',
+      source: 'unsplash_public',
+    });
 
-          const r = await axios.get(`https://api.unsplash.com/search/photos`, {
-            params: { query, per_page: 5, orientation: "landscape" },
-            headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` },
-            timeout: 5000,
-          });
-
-          const results = r.data?.results;
-          if (results && results.length > 0) {
-            const photo = results[0];
-            return res.json({
-              found: true,
-              thumbnail: photo.urls?.regular || photo.urls?.small,
-              photographer: photo.user?.name || "Unsplash",
-              source: "unsplash",
-              credit_url: photo.links?.html,
-            });
-          }
-        }
-      } catch(e) {}
-    }
-
-    // Try 4: Unsplash generic aviation (no API key needed — public collections)
-    try {
-      const airlineNames = {
-        "EK": "Emirates", "SV": "Saudia", "QR": "Qatar", "EY": "Etihad",
-        "6E": "IndiGo", "AI": "Air India", "TK": "Turkish", "BA": "British Airways",
-      };
-      const airlineName = airlineNames[airline?.toUpperCase()] || "airplane";
-      const aircraftShort = aircraft?.split(" ")[1] || "aircraft";
-      const query = encodeURIComponent(`${airlineName} ${aircraftShort}`);
-      
-      // Use Unsplash source (no API key, returns random relevant image)
-      return res.json({
-        found: true,
-        thumbnail: `https://source.unsplash.com/800x500/?${query}`,
-        photographer: "Unsplash",
-        source: "unsplash_public",
-      });
-    } catch(e) {}
-
-    res.json({ found: false });
-  } catch (err) { res.json({ found: false, error: err.message }); }
+  } catch (err) {
+    // Absolute last resort
+    res.json({
+      found: true,
+      thumbnail: 'https://source.unsplash.com/800x450/?airplane',
+      photographer: 'Unsplash',
+      source: 'fallback',
+    });
+  }
 });
-
 
 app.get("/route-flights", async (req, res) => {
   try {
