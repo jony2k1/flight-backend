@@ -481,6 +481,71 @@ Return ONLY valid JSON, no markdown:
   }
 });
 
+
+app.get("/flight-info", async (req, res) => {
+  try {
+    const { flightNumber } = req.query;
+    if (!flightNumber) return res.status(400).json({ error: "Flight number required" });
+    const today = new Date().toISOString().slice(0,10);
+    const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
+    let flight = null;
+    for (const date of [today, yesterday]) {
+      try {
+        const response = await axios.get(
+          `https://aerodatabox.p.rapidapi.com/flights/number/${flightNumber.toUpperCase().replace(/\s/g,"")}/${date}`,
+          { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+        );
+        const data = response.data;
+        if (Array.isArray(data) && data.length > 0) { flight = data[0]; break; }
+      } catch(e) {}
+    }
+    if (!flight) return res.json({ found: false });
+    const schedDep = flight.departure?.scheduledTime?.utc;
+    const revisedDep = flight.departure?.revisedTime?.utc;
+    let delayMinutes = 0;
+    if (schedDep && revisedDep) delayMinutes = Math.round((new Date(revisedDep)-new Date(schedDep))/60000);
+    res.json({
+      found: true,
+      flightNumber: flight.number || flightNumber,
+      airline: flight.airline?.name || "",
+      airlineIata: flight.airline?.iata || "",
+      from: flight.departure?.airport?.iata || "",
+      fromCity: flight.departure?.airport?.municipalityName || "",
+      fromTerminal: flight.departure?.terminal || "",
+      to: flight.arrival?.airport?.iata || "",
+      toCity: flight.arrival?.airport?.municipalityName || "",
+      toTerminal: flight.arrival?.terminal || "",
+      baggageBelt: flight.arrival?.baggageBelt || "",
+      aircraft: flight.aircraft?.model || "",
+      aircraftReg: flight.aircraft?.reg || "",
+      distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
+      scheduledDep: flight.departure?.scheduledTime?.local || "",
+      scheduledArr: flight.arrival?.scheduledTime?.local || "",
+      revisedDep: flight.departure?.revisedTime?.local || "",
+      revisedArr: flight.arrival?.revisedTime?.local || "",
+      status: flight.status || "",
+      delayMinutes,
+      isCargo: flight.isCargo || false,
+    });
+  } catch (err) { res.json({ found: false, error: err.message }); }
+});
+
+app.get("/aircraft-photo", async (req, res) => {
+  try {
+    const { reg } = req.query;
+    if (!reg) return res.status(400).json({ error: "Registration required" });
+    const response = await axios.get(`https://api.planespotters.net/pub/photos/reg/${reg.toUpperCase()}`);
+    const photos = response.data?.photos;
+    if (!photos || photos.length === 0) return res.json({ found: false });
+    res.json({
+      found: true,
+      thumbnail: photos[0].thumbnail_large?.src || photos[0].thumbnail?.src,
+      link: photos[0].link,
+      photographer: photos[0].photographer,
+    });
+  } catch (err) { res.json({ found: false, error: err.message }); }
+});
+
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
