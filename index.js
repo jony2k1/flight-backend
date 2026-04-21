@@ -663,6 +663,47 @@ app.get("/route-flights", async (req, res) => {
   }
 });
 
+
+app.get("/airport-info", async (req, res) => {
+  try {
+    const { iata } = req.query;
+    if (!iata) return res.status(400).json({ error: "IATA required" });
+    const response = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/airports/iata/${iata.toUpperCase()}`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    res.json(response.data);
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/similar-flights", async (req, res) => {
+  try {
+    const { from, to, date } = req.query;
+    if (!from || !to) return res.status(400).json({ error: "from and to required" });
+    const useDate = date || new Date().toISOString().slice(0,10);
+    const start = `${useDate}T06:00`;
+    const end = `${useDate}T18:00`;
+    const response = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/flights/airports/iata/${from.toUpperCase()}/${start}/${end}?withLeg=true&direction=Departure&withCancelled=false&withCodeshared=false&withCargo=false`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    const all = response.data?.departures || [];
+    const matching = all
+      .filter(f => f.arrival?.airport?.iata === to.toUpperCase())
+      .map(f => ({
+        number: f.number,
+        airline: f.airline?.name || "",
+        airlineIata: f.airline?.iata || "",
+        dep: f.departure?.scheduledTime?.local || "",
+        arr: f.arrival?.scheduledTime?.local || "",
+        terminal: f.departure?.terminal || "",
+        aircraft: f.aircraft?.model || "",
+        status: f.status || "",
+      }));
+    res.json({ flights: matching });
+  } catch(err) { res.json({ flights: [], error: err.message }); }
+});
+
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
