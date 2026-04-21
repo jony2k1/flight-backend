@@ -486,10 +486,17 @@ app.get("/flight-info", async (req, res) => {
   try {
     const { flightNumber } = req.query;
     if (!flightNumber) return res.status(400).json({ error: "Flight number required" });
-    const today = new Date().toISOString().slice(0,10);
-    const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
+    // Try today, yesterday, and last 7 days
+    const dates = [];
+    for (let i = 0; i <= 7; i++) {
+      dates.push(new Date(Date.now() - i * 86400000).toISOString().slice(0,10));
+    }
+    // Also try tomorrow and day after (scheduled future flights)
+    dates.unshift(new Date(Date.now() + 86400000).toISOString().slice(0,10));
+    dates.unshift(new Date(Date.now() + 2*86400000).toISOString().slice(0,10));
+
     let flight = null;
-    for (const date of [today, yesterday]) {
+    for (const date of dates) {
       try {
         const response = await axios.get(
           `https://aerodatabox.p.rapidapi.com/flights/number/${flightNumber.toUpperCase().replace(/\s/g,"")}/${date}`,
