@@ -562,22 +562,33 @@ app.get("/aircraft-photo", async (req, res) => {
       } catch(e) {}
     }
 
-    // Try 2: airline code
+    // Try 2: Wikipedia airline photo
     if (airline) {
-      try {
-        const r = await axios.get(`https://api.planespotters.net/pub/photos/airline/${airline.toUpperCase()}`);
-        const photos = r.data?.photos;
-        if (photos && photos.length > 0) {
-          // Pick random photo for variety
-          const pick = photos[Math.floor(Math.random() * Math.min(photos.length, 5))];
-          return res.json({
-            found: true,
-            thumbnail: pick.thumbnail_large?.src || pick.thumbnail?.src,
-            photographer: pick.photographer,
-            source: "airline",
-          });
-        }
-      } catch(e) {}
+      const airlineWikiMap = {
+        "6E": "IndiGo", "EK": "Emirates", "SV": "Saudia",
+        "AI": "Air_India", "QR": "Qatar_Airways", "EY": "Etihad_Airways",
+        "FZ": "flydubai", "XY": "flynas", "WY": "Oman_Air",
+        "GF": "Gulf_Air", "G9": "Air_Arabia", "KU": "Kuwait_Airways",
+        "TK": "Turkish_Airlines", "BA": "British_Airways", "LH": "Lufthansa",
+        "AF": "Air_France", "KL": "KLM", "J9": "Jazeera_Airways",
+        "F3": "Flyadeal", "BG": "Biman_Bangladesh_Airlines",
+        "SG": "SpiceJet", "TG": "Thai_Airways",
+      };
+      const wikiName = airlineWikiMap[airline.toUpperCase()];
+      if (wikiName) {
+        try {
+          const r = await axios.get(`https://en.wikipedia.org/api/rest_v1/page/summary/${wikiName}`);
+          const thumb = r.data?.thumbnail?.source || r.data?.originalimage?.source;
+          if (thumb) {
+            return res.json({
+              found: true,
+              thumbnail: thumb,
+              photographer: "Wikipedia",
+              source: "airline",
+            });
+          }
+        } catch(e) {}
+      }
     }
 
     res.json({ found: false });
