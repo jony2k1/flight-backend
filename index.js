@@ -486,14 +486,19 @@ app.get("/flight-info", async (req, res) => {
   try {
     const { flightNumber } = req.query;
     if (!flightNumber) return res.status(400).json({ error: "Flight number required" });
-    // Try today, yesterday, and last 7 days
+    const { date } = req.query;
     const dates = [];
-    for (let i = 0; i <= 7; i++) {
-      dates.push(new Date(Date.now() - i * 86400000).toISOString().slice(0,10));
+    if (date) {
+      // Specific date requested
+      dates.push(date);
+    } else {
+      // Auto: today, tomorrow, yesterday, last 7 days
+      dates.push(new Date(Date.now() + 2*86400000).toISOString().slice(0,10));
+      dates.push(new Date(Date.now() + 86400000).toISOString().slice(0,10));
+      for (let i = 0; i <= 7; i++) {
+        dates.push(new Date(Date.now() - i * 86400000).toISOString().slice(0,10));
+      }
     }
-    // Also try tomorrow and day after (scheduled future flights)
-    dates.unshift(new Date(Date.now() + 86400000).toISOString().slice(0,10));
-    dates.unshift(new Date(Date.now() + 2*86400000).toISOString().slice(0,10));
 
     let flight = null;
     for (const date of dates) {
