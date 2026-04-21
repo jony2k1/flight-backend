@@ -544,52 +544,106 @@ app.get("/flight-info", async (req, res) => {
 
 app.get("/aircraft-photo", async (req, res) => {
   try {
-    const { reg, airline } = req.query;
+    const { reg, airline, aircraft } = req.query;
 
-    // Try 1: exact registration
-    if (reg) {
+    // Try 1: Planespotters by exact registration
+    if (reg && reg.trim()) {
       try {
-        const r = await axios.get(`https://api.planespotters.net/pub/photos/reg/${reg.toUpperCase()}`);
+        const r = await axios.get(`https://api.planespotters.net/pub/photos/reg/${reg.toUpperCase().trim()}`, { timeout: 5000 });
         const photos = r.data?.photos;
         if (photos && photos.length > 0) {
           return res.json({
             found: true,
             thumbnail: photos[0].thumbnail_large?.src || photos[0].thumbnail?.src,
             photographer: photos[0].photographer,
+            aircraft: photos[0].aircraft?.model || "",
             source: "registration",
           });
         }
       } catch(e) {}
     }
 
-    // Try 2: Wikipedia airline photo
-    if (airline) {
-      const airlineWikiMap = {
-        "6E": "IndiGo", "EK": "Emirates", "SV": "Saudia",
-        "AI": "Air_India", "QR": "Qatar_Airways", "EY": "Etihad_Airways",
-        "FZ": "flydubai", "XY": "flynas", "WY": "Oman_Air",
-        "GF": "Gulf_Air", "G9": "Air_Arabia", "KU": "Kuwait_Airways",
-        "TK": "Turkish_Airlines", "BA": "British_Airways", "LH": "Lufthansa",
-        "AF": "Air_France", "KL": "KLM", "J9": "Jazeera_Airways",
-        "F3": "Flyadeal", "BG": "Biman_Bangladesh_Airlines",
-        "SG": "SpiceJet", "TG": "Thai_Airways",
-      };
-      const wikiName = airlineWikiMap[airline.toUpperCase()];
-      if (wikiName) {
-        try {
-          const r = await axios.get(`https://en.wikipedia.org/api/rest_v1/page/summary/${wikiName}`);
-          const thumb = r.data?.thumbnail?.source || r.data?.originalimage?.source;
-          if (thumb) {
+    // Try 2: Planespotters by airline IATA code
+    if (airline && airline.trim()) {
+      try {
+        const r = await axios.get(`https://api.planespotters.net/pub/photos/airline/${airline.toUpperCase().trim()}`, { timeout: 5000 });
+        const photos = r.data?.photos;
+        if (photos && photos.length > 0) {
+          // Pick a photo matching aircraft type if possible
+          let best = photos[0];
+          if (aircraft) {
+            const match = photos.find(p => p.aircraft?.model?.toLowerCase().includes(aircraft.toLowerCase().split(" ")[1] || ""));
+            if (match) best = match;
+          }
+          return res.json({
+            found: true,
+            thumbnail: best.thumbnail_large?.src || best.thumbnail?.src,
+            photographer: best.photographer,
+            aircraft: best.aircraft?.model || "",
+            source: "airline_fleet",
+          });
+        }
+      } catch(e) {}
+    }
+
+    // Try 3: Unsplash — high quality aviation photos
+    if (airline || aircraft) {
+      try {
+        const UNSPLASH_KEY = process.env.UNSPLASH_ACCESS_KEY;
+        if (UNSPLASH_KEY) {
+          // Build search query
+          const airlineNames = {
+            "EK": "Emirates", "SV": "Saudia", "6E": "IndiGo", "AI": "Air India",
+            "QR": "Qatar Airways", "EY": "Etihad", "FZ": "flydubai", "XY": "flynas",
+            "WY": "Oman Air", "GF": "Gulf Air", "G9": "Air Arabia", "KU": "Kuwait Airways",
+            "TK": "Turkish Airlines", "BA": "British Airways", "LH": "Lufthansa",
+            "AF": "Air France", "KL": "KLM", "J9": "Jazeera", "F3": "Flyadeal",
+            "BG": "Biman Bangladesh", "SG": "SpiceJet", "TG": "Thai Airways",
+            "SQ": "Singapore Airlines", "CX": "Cathay Pacific",
+          };
+          const airlineName = airlineNames[airline?.toUpperCase()] || airline || "";
+          const aircraftType = aircraft?.split(" ").slice(0,2).join(" ") || "";
+          const query = `${airlineName} ${aircraftType} airplane`.trim();
+
+          const r = await axios.get(`https://api.unsplash.com/search/photos`, {
+            params: { query, per_page: 5, orientation: "landscape" },
+            headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` },
+            timeout: 5000,
+          });
+
+          const results = r.data?.results;
+          if (results && results.length > 0) {
+            const photo = results[0];
             return res.json({
               found: true,
-              thumbnail: thumb,
-              photographer: "Wikipedia",
-              source: "airline",
+              thumbnail: photo.urls?.regular || photo.urls?.small,
+              photographer: photo.user?.name || "Unsplash",
+              source: "unsplash",
+              credit_url: photo.links?.html,
             });
           }
-        } catch(e) {}
-      }
+        }
+      } catch(e) {}
     }
+
+    // Try 4: Unsplash generic aviation (no API key needed — public collections)
+    try {
+      const airlineNames = {
+        "EK": "Emirates", "SV": "Saudia", "QR": "Qatar", "EY": "Etihad",
+        "6E": "IndiGo", "AI": "Air India", "TK": "Turkish", "BA": "British Airways",
+      };
+      const airlineName = airlineNames[airline?.toUpperCase()] || "airplane";
+      const aircraftShort = aircraft?.split(" ")[1] || "aircraft";
+      const query = encodeURIComponent(`${airlineName} ${aircraftShort}`);
+      
+      // Use Unsplash source (no API key, returns random relevant image)
+      return res.json({
+        found: true,
+        thumbnail: `https://source.unsplash.com/800x500/?${query}`,
+        photographer: "Unsplash",
+        source: "unsplash_public",
+      });
+    } catch(e) {}
 
     res.json({ found: false });
   } catch (err) { res.json({ found: false, error: err.message }); }
