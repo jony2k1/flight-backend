@@ -621,9 +621,21 @@ app.get("/aircraft-photo", async (req, res) => {
     const airlineName = AIRLINE_NAMES[airline?.toUpperCase()] || 'airplane';
     const aircraftShort = aircraft ? aircraft.split(' ').slice(0, 2).join(' ') : 'aircraft';
     const query = encodeURIComponent(`${airlineName} ${aircraftShort}`);
+    const airlinePhotos = {
+      'EK': 'https://images.unsplash.com/photo-1569629743817-70d8db6c323b?w=800&q=80',
+      'SV': 'https://images.unsplash.com/photo-1436491865332-7a61a109cc05?w=800&q=80',
+      'QR': 'https://images.unsplash.com/photo-1540962351504-03099e0a754b?w=800&q=80',
+      'EY': 'https://images.unsplash.com/photo-1559268950-b7a0e5b5e5b5?w=800&q=80',
+      '6E': 'https://images.unsplash.com/photo-1474302771604-a11e4b7d8f1a?w=800&q=80',
+      'AI': 'https://images.unsplash.com/photo-1436491865332-7a61a109cc05?w=800&q=80',
+      'TK': 'https://images.unsplash.com/photo-1569629743817-70d8db6c323b?w=800&q=80',
+      'XY': 'https://images.unsplash.com/photo-1436491865332-7a61a109cc05?w=800&q=80',
+      'FZ': 'https://images.unsplash.com/photo-1436491865332-7a61a109cc05?w=800&q=80',
+    };
+    const directPhoto = airlinePhotos[airline?.toUpperCase()] || 'https://images.unsplash.com/photo-1436491865332-7a61a109cc05?w=800&q=80';
     return res.json({
       found: true,
-      thumbnail: `https://source.unsplash.com/800x450/?${query}`,
+      thumbnail: directPhoto,
       photographer: 'Unsplash',
       source: 'unsplash_public',
     });
