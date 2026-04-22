@@ -518,6 +518,25 @@ app.get("/flight-info", async (req, res) => {
     }
     // Use flight with reg if found, otherwise use first flight found
     if (flightWithReg) flight = flightWithReg;
+
+    // If still no reg, check past 7 days to find reg for photo
+    if (flight && !flight.aircraft?.reg) {
+      for (let i = 1; i <= 7; i++) {
+        try {
+          const pastDate = new Date(Date.now() - i * 86400000).toISOString().slice(0,10);
+          const pr = await axios.get(
+            `https://aerodatabox.p.rapidapi.com/flights/number/${flightNumber.toUpperCase().replace(/\s/g,"")}/${pastDate}`,
+            { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+          );
+          const pd = pr.data;
+          if (Array.isArray(pd) && pd.length > 0 && pd[0].aircraft?.reg) {
+            if (!flight.aircraft) flight.aircraft = {};
+            flight.aircraft.reg = pd[0].aircraft.reg;
+            break;
+          }
+        } catch(e) {}
+      }
+    }
     if (!flight) return // Final fallback: Unsplash source (always works, no key needed)
     const schedDep = flight.departure?.scheduledTime?.utc;
     const revisedDep = flight.departure?.revisedTime?.utc;
