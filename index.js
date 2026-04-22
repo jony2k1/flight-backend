@@ -482,67 +482,57 @@ Return ONLY valid JSON, no markdown:
 });
 
 
+// Cache for flight info - expires after 1 hour
+const flightCache = {};
+
 app.get("/flight-info", async (req, res) => {
   try {
-    const { flightNumber } = req.query;
+    const { flightNumber, date } = req.query;
     if (!flightNumber) return res.status(400).json({ error: "Flight number required" });
-    const { date } = req.query;
-    const dates = [];
-    if (date) {
-      // Specific date requested
-      dates.push(date);
-    } else {
-      // Auto: today, tomorrow, yesterday, last 7 days
-      dates.push(new Date(Date.now() + 2*86400000).toISOString().slice(0,10));
-      dates.push(new Date(Date.now() + 86400000).toISOString().slice(0,10));
-      for (let i = 0; i <= 7; i++) {
-        dates.push(new Date(Date.now() - i * 86400000).toISOString().slice(0,10));
-      }
+    
+    const fn = flightNumber.toUpperCase().replace(/\s/g,"");
+    const cacheKey = date ? `${fn}-${date}` : fn;
+    
+    // Return cache if less than 1 hour old
+    if (flightCache[cacheKey] && (Date.now() - flightCache[cacheKey].ts) < 3600000) {
+      return res.json(flightCache[cacheKey].data);
     }
+
+    // Build date list - max 4 dates to avoid rate limit
+    const dates = date ? [date] : [
+      new Date(Date.now() + 86400000).toISOString().slice(0,10), // tomorrow
+      new Date().toISOString().slice(0,10),                        // today
+      new Date(Date.now() - 86400000).toISOString().slice(0,10), // yesterday
+      new Date(Date.now() - 2*86400000).toISOString().slice(0,10), // 2 days ago
+    ];
 
     let flight = null;
-    let flightWithReg = null;
-    for (const date of dates) {
+    for (const d of dates) {
       try {
-        const response = await axios.get(
-          `https://aerodatabox.p.rapidapi.com/flights/number/${flightNumber.toUpperCase().replace(/\s/g,"")}/${date}`,
+        const r = await axios.get(
+          `https://aerodatabox.p.rapidapi.com/flights/number/${fn}/${d}`,
           { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
         );
-        const data = response.data;
-        if (Array.isArray(data) && data.length > 0) {
-          if (!flight) flight = data[0];
-          if (!flightWithReg && data[0].aircraft?.reg) flightWithReg = data[0];
-          if (flightWithReg) break;
+        if (Array.isArray(r.data) && r.data.length > 0) {
+          flight = r.data[0];
+          // If has reg, stop searching
+          if (flight.aircraft?.reg) break;
         }
-      } catch(e) {}
+      } catch(e) { if(e.response?.status === 429) break; } // Stop on rate limit
     }
-    // Use flight with reg if found, otherwise use first flight found
-    if (flightWithReg) flight = flightWithReg;
 
-    // If still no reg, check past 7 days to find reg for photo
-    if (flight && !flight.aircraft?.reg) {
-      for (let i = 1; i <= 7; i++) {
-        try {
-          const pastDate = new Date(Date.now() - i * 86400000).toISOString().slice(0,10);
-          const pr = await axios.get(
-            `https://aerodatabox.p.rapidapi.com/flights/number/${flightNumber.toUpperCase().replace(/\s/g,"")}/${pastDate}`,
-            { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-          );
-          const pd = pr.data;
-          if (Array.isArray(pd) && pd.length > 0 && pd[0].aircraft?.reg) {
-            if (!flight.aircraft) flight.aircraft = {};
-            flight.aircraft.reg = pd[0].aircraft.reg;
-            break;
-          }
-        } catch(e) {}
-      }
+    if (!flight) {
+      flightCache[cacheKey] = { data: { found: false }, ts: Date.now() };
+      return res.json({ found: false });
     }
-    if (!flight) return // Final fallback: Unsplash source (always works, no key needed)
+
     const schedDep = flight.departure?.scheduledTime?.utc;
     const revisedDep = flight.departure?.revisedTime?.utc;
-    let delayMinutes = 0;
-    if (schedDep && revisedDep) delayMinutes = Math.round((new Date(revisedDep)-new Date(schedDep))/60000);
-    res.json({
+    const delayMinutes = schedDep && revisedDep
+      ? Math.round((new Date(revisedDep) - new Date(schedDep)) / 60000)
+      : 0;
+
+    const result = {
       found: true,
       flightNumber: flight.number || flightNumber,
       airline: flight.airline?.name || "",
@@ -564,7 +554,10 @@ app.get("/flight-info", async (req, res) => {
       status: flight.status || "",
       delayMinutes,
       isCargo: flight.isCargo || false,
-    });
+    };
+
+    flightCache[cacheKey] = { data: result, ts: Date.now() };
+    res.json(result);
   } catch (err) { res.json({ found: false, error: err.message }); }
 });
 
@@ -702,13 +695,22 @@ app.get("/airport-info", async (req, res) => {
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
+const similarFlightsCache = {};
+
 app.get("/similar-flights", async (req, res) => {
   try {
     const { from, to, date } = req.query;
     if (!from || !to) return res.status(400).json({ error: "from and to required" });
     const useDate = date || new Date().toISOString().slice(0,10);
-    const start = `${useDate}T06:00`;
-    const end = `${useDate}T18:00`;
+    const cacheKey = `${from}-${to}-${useDate}`;
+
+    // Cache for 2 hours
+    if (similarFlightsCache[cacheKey] && (Date.now() - similarFlightsCache[cacheKey].ts) < 7200000) {
+      return res.json({ flights: similarFlightsCache[cacheKey].data, cached: true });
+    }
+
+    const start = `${useDate}T00:00`;
+    const end = `${useDate}T12:00`;
     const response = await axios.get(
       `https://aerodatabox.p.rapidapi.com/flights/airports/iata/${from.toUpperCase()}/${start}/${end}?withLeg=true&direction=Departure&withCancelled=false&withCodeshared=false&withCargo=false`,
       { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
@@ -726,6 +728,8 @@ app.get("/similar-flights", async (req, res) => {
         aircraft: f.aircraft?.model || "",
         status: f.status || "",
       }));
+
+    similarFlightsCache[cacheKey] = { data: matching, ts: Date.now() };
     res.json({ flights: matching });
   } catch(err) { res.json({ flights: [], error: err.message }); }
 });
