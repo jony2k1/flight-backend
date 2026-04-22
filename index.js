@@ -702,18 +702,11 @@ app.get("/airport-info", async (req, res) => {
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
-const similarCache = {};
-
 app.get("/similar-flights", async (req, res) => {
   try {
     const { from, to, date } = req.query;
     if (!from || !to) return res.status(400).json({ error: "from and to required" });
     const useDate = date || new Date().toISOString().slice(0,10);
-    const cacheKey = `${from}-${to}-${useDate}`;
-    
-    // Return cached result
-    if (similarCache[cacheKey]) return res.json({ flights: similarCache[cacheKey], cached: true });
-    
     const start = `${useDate}T06:00`;
     const end = `${useDate}T18:00`;
     const response = await axios.get(
@@ -733,7 +726,6 @@ app.get("/similar-flights", async (req, res) => {
         aircraft: f.aircraft?.model || "",
         status: f.status || "",
       }));
-    similarCache[cacheKey] = matching;
     res.json({ flights: matching });
   } catch(err) { res.json({ flights: [], error: err.message }); }
 });
@@ -801,20 +793,13 @@ app.get("/flight-dates", async (req, res) => {
 });
 
 
-// In-memory cache for aircraft registrations
-const regCache = {};
-
 app.get("/find-aircraft-reg", async (req, res) => {
   try {
     const { flightNumber } = req.query;
     if (!flightNumber) return res.json({ reg: "" });
     const fn = flightNumber.toUpperCase().replace(/\s/g,"");
-    
-    // Return from cache if available
-    if (regCache[fn]) return res.json({ reg: regCache[fn], cached: true });
-    
-    // Only check yesterday and 2 days ago (2 API calls max)
-    for (let i = 1; i <= 2; i++) {
+    // Check last 7 days
+    for (let i = 1; i <= 7; i++) {
       const date = new Date(Date.now() - i * 86400000).toISOString().slice(0,10);
       try {
         const r = await axios.get(
@@ -822,7 +807,6 @@ app.get("/find-aircraft-reg", async (req, res) => {
           { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
         );
         if (Array.isArray(r.data) && r.data.length > 0 && r.data[0].aircraft?.reg) {
-          regCache[fn] = r.data[0].aircraft.reg;
           return res.json({ reg: r.data[0].aircraft.reg, date });
         }
       } catch(e) {}
