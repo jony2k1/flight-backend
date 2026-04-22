@@ -792,6 +792,29 @@ app.get("/flight-dates", async (req, res) => {
   } catch(e) { res.json({ dates: [] }); }
 });
 
+
+app.get("/find-aircraft-reg", async (req, res) => {
+  try {
+    const { flightNumber } = req.query;
+    if (!flightNumber) return res.json({ reg: "" });
+    const fn = flightNumber.toUpperCase().replace(/\s/g,"");
+    // Check last 7 days
+    for (let i = 1; i <= 7; i++) {
+      const date = new Date(Date.now() - i * 86400000).toISOString().slice(0,10);
+      try {
+        const r = await axios.get(
+          `https://aerodatabox.p.rapidapi.com/flights/number/${fn}/${date}`,
+          { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+        );
+        if (Array.isArray(r.data) && r.data.length > 0 && r.data[0].aircraft?.reg) {
+          return res.json({ reg: r.data[0].aircraft.reg, date });
+        }
+      } catch(e) {}
+    }
+    res.json({ reg: "" });
+  } catch(e) { res.json({ reg: "" }); }
+});
+
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
