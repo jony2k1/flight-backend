@@ -704,6 +704,68 @@ app.get("/similar-flights", async (req, res) => {
   } catch(err) { res.json({ flights: [], error: err.message }); }
 });
 
+
+app.get("/flight-autocomplete", async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.length < 2) return res.json({ items: [] });
+    const r = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/flights/search/term?q=${q.toUpperCase()}`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    res.json({ items: r.data?.items || [] });
+  } catch(e) { res.json({ items: [] }); }
+});
+
+app.get("/aircraft-image", async (req, res) => {
+  try {
+    const { reg } = req.query;
+    if (!reg) return res.json({ found: false });
+    const r = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/aircrafts/reg/${reg.toUpperCase()}/image/beta`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    if (r.data?.url) return res.json({ found: true, url: r.data.url, author: r.data.author });
+    res.json({ found: false });
+  } catch(e) { res.json({ found: false }); }
+});
+
+app.get("/aircraft-details", async (req, res) => {
+  try {
+    const { reg } = req.query;
+    if (!reg) return res.json({ found: false });
+    const r = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/aircrafts/reg/${reg.toUpperCase()}`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    if (r.data) return res.json({
+      found: true,
+      reg: r.data.reg,
+      model: r.data.model,
+      airlineName: r.data.airlineName,
+      age: r.data.age,
+      firstFlightDate: r.data.firstFlightDate,
+      numSeats: r.data.numSeats,
+    });
+    res.json({ found: false });
+  } catch(e) { res.json({ found: false }); }
+});
+
+app.get("/flight-dates", async (req, res) => {
+  try {
+    const { flightNumber } = req.query;
+    if (!flightNumber) return res.json({ dates: [] });
+    const today = new Date();
+    const from = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0,10);
+    const to = new Date(today.getFullYear(), today.getMonth()+2, 0).toISOString().slice(0,10);
+    const r = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/flights/number/${flightNumber.toUpperCase().replace(/\s/g,"")}/dates/${from}/${to}`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    res.json({ dates: Array.isArray(r.data) ? r.data : [] });
+  } catch(e) { res.json({ dates: [] }); }
+});
+
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
