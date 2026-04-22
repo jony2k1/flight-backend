@@ -501,6 +501,7 @@ app.get("/flight-info", async (req, res) => {
     }
 
     let flight = null;
+    let flightWithReg = null;
     for (const date of dates) {
       try {
         const response = await axios.get(
@@ -508,9 +509,15 @@ app.get("/flight-info", async (req, res) => {
           { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
         );
         const data = response.data;
-        if (Array.isArray(data) && data.length > 0) { flight = data[0]; break; }
+        if (Array.isArray(data) && data.length > 0) {
+          if (!flight) flight = data[0];
+          if (!flightWithReg && data[0].aircraft?.reg) flightWithReg = data[0];
+          if (flightWithReg) break;
+        }
       } catch(e) {}
     }
+    // Use flight with reg if found, otherwise use first flight found
+    if (flightWithReg) flight = flightWithReg;
     if (!flight) return // Final fallback: Unsplash source (always works, no key needed)
     const schedDep = flight.departure?.scheduledTime?.utc;
     const revisedDep = flight.departure?.revisedTime?.utc;
