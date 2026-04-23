@@ -498,10 +498,13 @@ app.get("/flight-info", async (req, res) => {
       return res.json(flightCache[cacheKey].data);
     }
 
-    // Build date list - max 4 dates to avoid rate limit
+    // Build date list - today, tomorrow, yesterday, up to 7 days back
     const dates = date ? [date] : [
-      new Date(Date.now() + 86400000).toISOString().slice(0,10), // tomorrow
-      new Date().toISOString().slice(0,10),                        // today
+      new Date().toISOString().slice(0,10),                           // today
+      new Date(Date.now() + 86400000).toISOString().slice(0,10),     // tomorrow
+      new Date(Date.now() - 86400000).toISOString().slice(0,10),     // yesterday
+      new Date(Date.now() - 2*86400000).toISOString().slice(0,10),   // 2 days ago
+      new Date(Date.now() - 3*86400000).toISOString().slice(0,10),   // 3 days ago
     ];
 
     let flight = null;
