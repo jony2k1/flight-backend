@@ -502,8 +502,6 @@ app.get("/flight-info", async (req, res) => {
     const dates = date ? [date] : [
       new Date(Date.now() + 86400000).toISOString().slice(0,10), // tomorrow
       new Date().toISOString().slice(0,10),                        // today
-      new Date(Date.now() - 86400000).toISOString().slice(0,10), // yesterday
-      new Date(Date.now() - 2*86400000).toISOString().slice(0,10), // 2 days ago
     ];
 
     let flight = null;
