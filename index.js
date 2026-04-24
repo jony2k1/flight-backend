@@ -823,3 +823,48 @@ app.get("/find-aircraft-reg", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
+// ── PEXELS COUNTRY PHOTOS ──────────────────────────────────────
+app.get('/country-photos', async (req, res) => {
+  const { country } = req.query;
+  if (!country) return res.status(400).json({ error: 'country required' });
+  try {
+    const query = encodeURIComponent(`${country} landmark travel`);
+    const response = await fetch(
+      `https://api.pexels.com/v1/search?query=${query}&per_page=4&orientation=landscape`,
+      { headers: { Authorization: process.env.PEXELS_KEY } }
+    );
+    const data = await response.json();
+    const photos = (data.photos || []).map(p => ({
+      url: p.src.large,
+      thumb: p.src.medium,
+      photographer: p.photographer,
+      alt: p.alt,
+    }));
+    res.json({ photos });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PEXELS COUNTRY PHOTOS ──────────────────────────────────────
+app.get('/country-photos', async (req, res) => {
+  const { country } = req.query;
+  if (!country) return res.status(400).json({ error: 'country required' });
+  try {
+    const query = encodeURIComponent(`${country} landmark travel`);
+    const response = await fetch(
+      `https://api.pexels.com/v1/search?query=${query}&per_page=4&orientation=landscape`,
+      { headers: { Authorization: process.env.PEXELS_KEY } }
+    );
+    const data = await response.json();
+    const photos = (data.photos || []).map(p => ({
+      url: p.src.large,
+      thumb: p.src.medium,
+      photographer: p.photographer,
+      alt: p.alt,
+    }));
+    res.json({ photos });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
