@@ -820,6 +820,25 @@ app.get("/find-aircraft-reg", async (req, res) => {
   } catch(e) { res.json({ reg: "" }); }
 });
 
+
+// DeepL Translation
+app.post("/translate", async (req, res) => {
+  try {
+    const { text, target_lang, source_lang } = req.body;
+    const response = await fetch("https://api-free.deepl.com/v2/translate", {
+      method: "POST",
+      headers: {
+        "Authorization": `DeepL-Auth-Key ${process.env.DEEPL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: [text], target_lang: target_lang || "EN", source_lang: source_lang || null }),
+    });
+    const data = await response.json();
+    res.json({ translation: data.translations?.[0]?.text || "" });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
