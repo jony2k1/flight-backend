@@ -548,6 +548,7 @@ app.get("/flight-info", async (req, res) => {
       aircraft: flight.aircraft?.model || "",
       aircraftReg: flight.aircraft?.reg || "",
       distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
+      durationMins: (() => { const dep = new Date((flight.departure?.scheduledTime?.utc||"").replace(" ","T")); const arr = new Date((flight.arrival?.scheduledTime?.utc||"").replace(" ","T")); const apiMins = arr-dep > 0 ? Math.round((arr-dep)/60000) : 0; const distMins = Math.round((flight.greatCircleDistance?.km||0)/850*60); return apiMins > 0 && apiMins < 600 ? apiMins : distMins; })(),
       scheduledDep: flight.departure?.scheduledTime?.local || "",
       scheduledDepUtc: flight.departure?.scheduledTime?.utc || "",
       scheduledArr: flight.arrival?.scheduledTime?.local || "",
