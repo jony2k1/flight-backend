@@ -494,7 +494,7 @@ app.get("/flight-info", async (req, res) => {
     const cacheKey = date ? `${fn}-${date}` : fn;
     
     // Return cache if less than 1 hour old
-    if (flightCache[cacheKey] && (Date.now() - flightCache[cacheKey].ts) < 3600000) {
+    if (flightCache[cacheKey] && (Date.now() - flightCache[cacheKey].ts) < 3600000 && flightCache[cacheKey].data.status !== "Arrived") {
       return res.json(flightCache[cacheKey].data);
     }
 
@@ -549,7 +549,9 @@ app.get("/flight-info", async (req, res) => {
       aircraftReg: flight.aircraft?.reg || "",
       distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
       scheduledDep: flight.departure?.scheduledTime?.local || "",
+      scheduledDepUtc: flight.departure?.scheduledTime?.utc || "",
       scheduledArr: flight.arrival?.scheduledTime?.local || "",
+      scheduledArrUtc: flight.arrival?.scheduledTime?.utc || "",
       revisedDep: flight.departure?.revisedTime?.local || "",
       revisedArr: flight.arrival?.revisedTime?.local || "",
       status: flight.status || "",
