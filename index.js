@@ -574,6 +574,11 @@ const result = {
   isCargo: flight.isCargo || false,
 };
 
+    flightCache[cacheKey] = { data: result, ts: Date.now() };
+    return res.json(result);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get("/aircraft-photo", async (req, res) => {
   try {
     const { reg, airline, aircraft } = req.query;
@@ -878,6 +883,7 @@ app.get('/country-photos', async (req, res) => {
 });
 
 // ── PEXELS COUNTRY PHOTOS ──────────────────────────────────────
+  // ── PEXELS COUNTRY PHOTOS ──────────────────────────────────────
 app.get('/country-photos', async (req, res) => {
   const { country } = req.query;
   if (!country) return res.status(400).json({ error: 'country required' });
@@ -923,3 +929,5 @@ app.get("/airport-delays", async (req, res) => {
     res.json(r.data);
   } catch(e) { res.json({ error: true }); }
 });
+
+app.listen(process.env.PORT || 3001, () => console.log('Server running'));
