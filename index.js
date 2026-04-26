@@ -619,7 +619,81 @@ async function fetchAviationStack(fn, date) {
   }
 }
 
-// ── FLIGHT INFO (AeroDataBox → AirLabs → AviationStack waterfall) ───
+// ── ENRICHMENT: fill missing distance/duration from AeroDataBox ───
+async function enrichDistance(result) {
+  if (!result || !result.from || !result.to) return result;
+  if (result.distanceKm > 0 && result.flightTime) return result;
+  try {
+    const r = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/airports/iata/${result.from}/distance-time/${result.to}?flightTimeModel=Standard`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" }, timeout: 8000 }
+    );
+    if (!result.distanceKm) result.distanceKm = Math.round(r.data?.greatCircleDistance?.km || 0);
+    if (!result.flightTime) result.flightTime = r.data?.approxFlightTime || "";
+  } catch (e) {
+    console.log("enrichDistance error:", e.message);
+  }
+  return result;
+}
+
+// ── ENRICHMENT: fill missing schedule fields from another source ──
+function mergeMissing(target, source) {
+  if (!target || !source) return target;
+  const fillable = [
+    "airline","airlineIata","airlineIcao","callSign",
+    "fromCity","fromName","fromTerminal","fromGate","fromCheckInDesk","fromRunway",
+    "toCity","toName","toTerminal","toGate","toRunway","baggageBelt",
+    "aircraft","aircraftReg",
+    "scheduledDep","scheduledDepUtc","scheduledArr","scheduledArrUtc",
+    "revisedDep","revisedDepUtc","revisedArr","revisedArrUtc",
+    "actualDep","actualDepUtc","actualArr","actualArrUtc",
+    "predictedDep","predictedArr",
+  ];
+  for (const k of fillable) {
+    if (!target[k] && source[k]) target[k] = source[k];
+  }
+  if (!target.distanceKm && source.distanceKm) target.distanceKm = source.distanceKm;
+  if (!target.flightTime && source.flightTime) target.flightTime = source.flightTime;
+  if (!target.delayMinutes && source.delayMinutes) target.delayMinutes = source.delayMinutes;
+  return target;
+}
+
+// ── INFER STATUS: backend safety net for misreported "Unknown" ────
+function inferStatus(result) {
+  if (!result) return result;
+  const lower = (result.status || "").toLowerCase();
+  // Don't override clear final states
+  if (lower.includes("cancelled") || lower.includes("diverted") || lower.includes("landed") || lower.includes("arrived")) {
+    return result;
+  }
+  const arrIso = result.actualArr || result.actualArrUtc || result.scheduledArrUtc || result.scheduledArr;
+  const depIso = result.actualDep || result.actualDepUtc || result.scheduledDepUtc || result.scheduledDep;
+  if (!arrIso) return result;
+  try {
+    const arrMs = new Date(String(arrIso).replace(" ", "T")).getTime();
+    if (isNaN(arrMs)) return result;
+    const now = Date.now();
+    const minsAfterArr = (now - arrMs) / 60000;
+
+    // Already landed >30 min ago → mark Arrived (frontend maps to "Landed")
+    if (minsAfterArr > 30) {
+      result.status = "Arrived";
+      return result;
+    }
+    // Currently airborne (departed but not yet arrived) → "Active"
+    if (depIso) {
+      const depMs = new Date(String(depIso).replace(" ", "T")).getTime();
+      if (!isNaN(depMs) && depMs < now && arrMs > now) {
+        if (!result.status || lower === "unknown" || lower === "scheduled") {
+          result.status = "Active";
+        }
+      }
+    }
+  } catch (e) {}
+  return result;
+}
+
+// ── FLIGHT INFO (AeroDataBox → AirLabs schedule → AviationStack → AirLabs live) ───
 const flightCache = {};
 
 app.get("/flight-info", async (req, res) => {
@@ -660,20 +734,17 @@ app.get("/flight-info", async (req, res) => {
     }
 
     if (!flight) {
-      // ── FALLBACK WATERFALL: AirLabs → AviationStack ────────────
+      // ── FALLBACK WATERFALL: AirLabs schedule → AviationStack → AirLabs live ──
       console.log(`AeroDataBox: no data for ${fn}, trying fallbacks...`);
       let fallback = null;
 
-      // 1. AirLabs schedule (richest fallback — has terminal/gate if plan supports)
+      // 1. AirLabs schedule (richest fallback — terminal/gate/baggage if plan supports)
       for (const d of dates) {
         fallback = await fetchAirLabsSchedule(fn, d);
         if (fallback) break;
       }
 
-      // 2. AirLabs live flight (real-time, works on free tier)
-      if (!fallback) fallback = await fetchAirLabsLive(fn);
-
-      // 3. AviationStack
+      // 2. AviationStack (good for scheduled times + terminal data)
       if (!fallback) {
         for (const d of dates) {
           fallback = await fetchAviationStack(fn, d);
@@ -681,7 +752,27 @@ app.get("/flight-info", async (req, res) => {
         }
       }
 
+      // 3. AirLabs live flight (last resort — confirms flight exists, no schedule)
+      if (!fallback) {
+        fallback = await fetchAirLabsLive(fn);
+        // If we ONLY got live data, try AviationStack to enrich with schedule
+        if (fallback && !fallback.scheduledDep) {
+          for (const d of dates) {
+            const enrich = await fetchAviationStack(fn, d);
+            if (enrich) {
+              fallback = mergeMissing(fallback, enrich);
+              fallback._source = `${fallback._source}+aviationstack`;
+              break;
+            }
+          }
+        }
+      }
+
       if (fallback) {
+        // Enrich missing distance/duration from AeroDataBox distance-time
+        fallback = await enrichDistance(fallback);
+        // Infer status from arrival time (fixes "En Route" when landed)
+        fallback = inferStatus(fallback);
         console.log(`✓ Fallback hit (${fallback._source}) for ${fn}`);
         flightCache[cacheKey] = { data: fallback, ts: Date.now() };
         return res.json(fallback);
@@ -803,6 +894,9 @@ result.fromCity = HUB_CITIES[hub] || hub;
     } catch(e) {}
   }
 }
+    // Apply status inference to fix "Unknown"/"Scheduled" when flight has actually landed
+    inferStatus(result);
+
     flightCache[cacheKey] = { data: result, ts: Date.now() };
     return res.json(result);
   } catch (e) {
