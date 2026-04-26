@@ -549,7 +549,30 @@ app.get("/flight-info", async (req, res) => {
       delayMinutes,
       isCargo: flight.isCargo || false,
     };
-
+// If departure missing but we have arrival, try flight-time with known hub
+if (!result.from && result.airlineIata) {
+  const AIRLINE_HUBS = {
+    'EK': 'DXB', 'SV': 'RUH', 'QR': 'DOH', 'EY': 'AUH',
+    'GF': 'BAH', 'KU': 'KWI', 'WY': 'MCT', 'G9': 'SHJ',
+    'FZ': 'DXB', 'XY': 'RUH', 'F3': 'RUH', 'J9': 'KWI',
+    '6E': 'DEL', 'AI': 'DEL', 'TK': 'IST', 'BA': 'LHR',
+  };
+  const hub = AIRLINE_HUBS[result.airlineIata];
+  if (hub && hub !== result.to) {
+    result.from = hub;
+    result.fromCity = hub;
+    // Get flight time
+    try {
+      await new Promise(r => setTimeout(r, 1100));
+      const ftRes = await axios.get(
+        `https://aerodatabox.p.rapidapi.com/airports/iata/${hub}/distance-time/${result.to}?flightTimeModel=Standard`,
+        { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+      );
+      result.flightTime = ftRes.data?.approxFlightTime || "";
+      result.distanceKm = Math.round(ftRes.data?.greatCircleDistance?.km || 0);
+    } catch(e) {}
+  }
+}
     flightCache[cacheKey] = { data: result, ts: Date.now() };
     return res.json(result);
   } catch (e) {
