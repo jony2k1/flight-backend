@@ -897,7 +897,19 @@ app.get("/flight-time", async (req, res) => {
   try {
     const { dep, arr } = req.query;
     const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/flights/airports/iata/${dep}/to/${arr}`,
+      `https://aerodatabox.p.rapidapi.com/flights/distance-and-time/iata/${dep}/${arr}`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    res.json(r.data);
+  } catch(e) { res.json({ error: true }); }
+});
+
+// Airport delays
+app.get("/airport-delays", async (req, res) => {
+  try {
+    const { iata } = req.query;
+    const r = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/airports/iata/${iata}/delays`,
       { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
     );
     res.json(r.data);
