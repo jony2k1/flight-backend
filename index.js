@@ -897,7 +897,7 @@ app.get("/flight-time", async (req, res) => {
   try {
     const { dep, arr } = req.query;
     const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/flights/distance-and-time/iata/${dep}/${arr}`,
+      `https://aerodatabox.p.rapidapi.com/airports/iata/${dep}/distance-time/${arr}?flightTimeModel=ML01`,
       { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
     );
     res.json(r.data);
