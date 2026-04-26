@@ -465,7 +465,8 @@ app.get("/flight-info", async (req, res) => {
     if (!flightNumber) return res.status(400).json({ error: "Flight number required" });
 
     const fn = flightNumber.toUpperCase().replace(/\s/g, "");
-    const cacheKey = date ? `${fn}-${date}` : fn;
+    // v2 = added gates, actual times, runways etc. Bump on schema changes.
+    const cacheKey = date ? `v2-${fn}-${date}` : `v2-${fn}`;
 
     if (flightCache[cacheKey] && (Date.now() - flightCache[cacheKey].ts) < 3600000 && flightCache[cacheKey].data.status !== "Arrived") {
       return res.json(flightCache[cacheKey].data);
@@ -526,26 +527,50 @@ app.get("/flight-info", async (req, res) => {
     const result = {
       found: true,
       flightNumber: flight.number || flightNumber,
+      callSign: flight.callSign || "",
       airline: flight.airline?.name || "",
       airlineIata: flight.airline?.iata || "",
+      airlineIcao: flight.airline?.icao || "",
       from: flight.departure?.airport?.iata || "",
+      fromIcao: flight.departure?.airport?.icao || "",
       fromCity: flight.departure?.airport?.municipalityName || "",
+      fromName: flight.departure?.airport?.name || "",
       fromTerminal: flight.departure?.terminal || "",
+      fromGate: flight.departure?.gate || "",
+      fromCheckInDesk: flight.departure?.checkInDesk || "",
+      fromRunway: flight.departure?.runway || "",
       to: flight.arrival?.airport?.iata || "",
+      toIcao: flight.arrival?.airport?.icao || "",
       toCity: flight.arrival?.airport?.municipalityName || "",
+      toName: flight.arrival?.airport?.name || "",
       toTerminal: flight.arrival?.terminal || "",
+      toGate: flight.arrival?.gate || "",
+      toRunway: flight.arrival?.runway || "",
       baggageBelt: flight.arrival?.baggageBelt || "",
       aircraft: flight.aircraft?.model || "",
       aircraftReg: flight.aircraft?.reg || "",
       distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
       flightTime,
+      // Scheduled
       scheduledDep: flight.departure?.scheduledTime?.local || "",
       scheduledDepUtc: flight.departure?.scheduledTime?.utc || "",
       scheduledArr: flight.arrival?.scheduledTime?.local || "",
       scheduledArrUtc: flight.arrival?.scheduledTime?.utc || "",
+      // Revised (estimated)
       revisedDep: flight.departure?.revisedTime?.local || "",
+      revisedDepUtc: flight.departure?.revisedTime?.utc || "",
       revisedArr: flight.arrival?.revisedTime?.local || "",
+      revisedArrUtc: flight.arrival?.revisedTime?.utc || "",
+      // Predicted (ML-based)
+      predictedDep: flight.departure?.predictedTime?.local || "",
+      predictedArr: flight.arrival?.predictedTime?.local || "",
+      // Actual takeoff / landing (runwayTime) — most accurate once airborne / landed
+      actualDep: flight.departure?.runwayTime?.local || "",
+      actualDepUtc: flight.departure?.runwayTime?.utc || "",
+      actualArr: flight.arrival?.runwayTime?.local || "",
+      actualArrUtc: flight.arrival?.runwayTime?.utc || "",
       status: flight.status || "",
+      codeshareStatus: flight.codeshareStatus || "",
       delayMinutes,
       isCargo: flight.isCargo || false,
     };
@@ -816,17 +841,64 @@ app.get("/flight-time", async (req, res) => {
   }
 });
 
-// ── AIRPORT DELAYS ────────────────────────────────────────────
+// ── AIRPORT DELAYS (cached 10 min) ────────────────────────────
+const delaysCache = {};
 app.get("/airport-delays", async (req, res) => {
   try {
     const { iata } = req.query;
+    if (!iata) return res.json({ error: true });
+    const key = iata.toUpperCase();
+    if (delaysCache[key] && (Date.now() - delaysCache[key].ts) < 600000) {
+      return res.json({ ...delaysCache[key].data, cached: true });
+    }
     const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/airports/iata/${iata}/delays`,
+      `https://aerodatabox.p.rapidapi.com/airports/iata/${key}/delays`,
       { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
     );
+    delaysCache[key] = { data: r.data, ts: Date.now() };
     res.json(r.data);
   } catch (e) {
     res.json({ error: true });
+  }
+});
+
+// ── AIRPORT WEATHER (uses OpenWeatherMap, cached 15 min) ──────
+const airportWxCache = {};
+app.get("/airport-weather", async (req, res) => {
+  try {
+    const { iata } = req.query;
+    if (!iata) return res.json({ error: true });
+    const key = iata.toUpperCase();
+    if (airportWxCache[key] && (Date.now() - airportWxCache[key].ts) < 900000) {
+      return res.json({ ...airportWxCache[key].data, cached: true });
+    }
+    if (airportsCache.length === 0) await loadAirports();
+    const ap = airportsCache.find(a => a.iata === key);
+    if (!ap) return res.json({ error: true, msg: "airport not found" });
+    const r = await axios.get(
+      `https://api.openweathermap.org/data/2.5/weather?lat=${ap.lat}&lon=${ap.lng}&appid=${WEATHER_KEY}&units=metric`
+    );
+    const w = r.data;
+    const data = {
+      iata: key,
+      tempC: Math.round(w.main?.temp ?? 0),
+      feelsC: Math.round(w.main?.feels_like ?? 0),
+      condition: w.weather?.[0]?.main || "",
+      description: w.weather?.[0]?.description || "",
+      icon: w.weather?.[0]?.icon || "",
+      humidity: w.main?.humidity ?? null,
+      windKph: w.wind?.speed != null ? Math.round(w.wind.speed * 3.6) : null,
+      windDeg: w.wind?.deg ?? null,
+      visibilityKm: w.visibility != null ? Math.round(w.visibility / 1000) : null,
+      pressureHpa: w.main?.pressure ?? null,
+      cloudsPct: w.clouds?.all ?? null,
+      sunrise: w.sys?.sunrise || null,
+      sunset: w.sys?.sunset || null,
+    };
+    airportWxCache[key] = { data, ts: Date.now() };
+    res.json(data);
+  } catch (e) {
+    res.json({ error: true, msg: e.message });
   }
 });
 
