@@ -545,7 +545,7 @@ try {
     );
     flightTime = ftRes.data?.approxFlightTime || "";
   }
-} catch(e) {}
+} catch(e) { console.log("flightTime error:", e.message, e.response?.data); }
 
 const result = {
   found: true,
@@ -831,7 +831,7 @@ app.get("/find-aircraft-reg", async (req, res) => {
         if (Array.isArray(r.data) && r.data.length > 0 && r.data[0].aircraft?.reg) {
           return res.json({ reg: r.data[0].aircraft.reg, date });
         }
-      } catch(e) {}
+      } catch(e) { console.log("flightTime error:", e.message, e.response?.data); }
     }
     res.json({ reg: "" });
   } catch(e) { res.json({ reg: "" }); }
