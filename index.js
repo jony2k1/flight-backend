@@ -540,7 +540,7 @@ try {
   const arrIata = flight.arrival?.airport?.iata;
   if (depIata && arrIata) {
     const ftRes = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/airports/iata/${depIata}/distance-time/${arrIata}?flightTimeModel=ML01`,
+      `https://aerodatabox.p.rapidapi.com/airports/iata/${depIata}/distance-time/${arrIata}?flightTimeModel=Standard`,
       { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
     );
     flightTime = ftRes.data?.approxFlightTime || "";
