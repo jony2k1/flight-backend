@@ -559,8 +559,13 @@ if (!result.from && result.airlineIata) {
   };
   const hub = AIRLINE_HUBS[result.airlineIata];
   if (hub && hub !== result.to) {
-    result.from = hub;
-    result.fromCity = hub;
+    const HUB_CITIES = {
+  'DXB':'Dubai','RUH':'Riyadh','DOH':'Doha','AUH':'Abu Dhabi',
+  'BAH':'Bahrain','KWI':'Kuwait','MCT':'Muscat','SHJ':'Sharjah',
+  'DEL':'Delhi','IST':'Istanbul','LHR':'London','KWI':'Kuwait',
+};
+result.from = hub;
+result.fromCity = HUB_CITIES[hub] || hub;
     // Get flight time
     try {
       await new Promise(r => setTimeout(r, 1100));
@@ -568,8 +573,17 @@ if (!result.from && result.airlineIata) {
         `https://aerodatabox.p.rapidapi.com/airports/iata/${hub}/distance-time/${result.to}?flightTimeModel=Standard`,
         { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
       );
-      result.flightTime = ftRes.data?.approxFlightTime || "";
+  result.flightTime = ftRes.data?.approxFlightTime || "";
       result.distanceKm = Math.round(ftRes.data?.greatCircleDistance?.km || 0);
+      // Calculate dep time from arrival - duration
+      if (result.flightTime && result.scheduledArrUtc) {
+        const parts = result.flightTime.split(":");
+        const mins = parseInt(parts[0])*60 + parseInt(parts[1]);
+        const arrTime = new Date(result.scheduledArrUtc.replace(" ","T").replace("Z",""));
+        const depTime = new Date(arrTime - mins*60000);
+        result.scheduledDepUtc = depTime.toISOString();
+        result.scheduledDep = depTime.toISOString();
+      }
     } catch(e) {}
   }
 }
