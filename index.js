@@ -533,37 +533,46 @@ app.get("/flight-info", async (req, res) => {
       ? Math.round((new Date(revisedDep) - new Date(schedDep)) / 60000)
       : 0;
 
-    const result = {
-      found: true,
-      flightNumber: flight.number || flightNumber,
-      airline: flight.airline?.name || "",
-      airlineIata: flight.airline?.iata || "",
-      from: flight.departure?.airport?.iata || "",
-      fromCity: flight.departure?.airport?.municipalityName || "",
-      fromTerminal: flight.departure?.terminal || "",
-      to: flight.arrival?.airport?.iata || "",
-      toCity: flight.arrival?.airport?.municipalityName || "",
-      toTerminal: flight.arrival?.terminal || "",
-      baggageBelt: flight.arrival?.baggageBelt || "",
-      aircraft: flight.aircraft?.model || "",
-      aircraftReg: flight.aircraft?.reg || "",
-      distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
-      distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
-      scheduledDep: flight.departure?.scheduledTime?.local || "",
-      scheduledDepUtc: flight.departure?.scheduledTime?.utc || "",
-      scheduledArr: flight.arrival?.scheduledTime?.local || "",
-      scheduledArrUtc: flight.arrival?.scheduledTime?.utc || "",
-      revisedDep: flight.departure?.revisedTime?.local || "",
-      revisedArr: flight.arrival?.revisedTime?.local || "",
-      status: flight.status || "",
-      delayMinutes,
-      isCargo: flight.isCargo || false,
-    };
+    // Get accurate flight time from ML API
+let flightTime = "";
+try {
+  const depIata = flight.departure?.airport?.iata;
+  const arrIata = flight.arrival?.airport?.iata;
+  if (depIata && arrIata) {
+    const ftRes = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/airports/iata/${depIata}/distance-time/${arrIata}?flightTimeModel=ML01`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    flightTime = ftRes.data?.approxFlightTime || "";
+  }
+} catch(e) {}
 
-    flightCache[cacheKey] = { data: result, ts: Date.now() };
-    res.json(result);
-  } catch (err) { res.json({ found: false, error: err.message }); }
-});
+const result = {
+  found: true,
+  flightNumber: flight.number || flightNumber,
+  airline: flight.airline?.name || "",
+  airlineIata: flight.airline?.iata || "",
+  from: flight.departure?.airport?.iata || "",
+  fromCity: flight.departure?.airport?.municipalityName || "",
+  fromTerminal: flight.departure?.terminal || "",
+  to: flight.arrival?.airport?.iata || "",
+  toCity: flight.arrival?.airport?.municipalityName || "",
+  toTerminal: flight.arrival?.terminal || "",
+  baggageBelt: flight.arrival?.baggageBelt || "",
+  aircraft: flight.aircraft?.model || "",
+  aircraftReg: flight.aircraft?.reg || "",
+  distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
+  flightTime,
+  scheduledDep: flight.departure?.scheduledTime?.local || "",
+  scheduledDepUtc: flight.departure?.scheduledTime?.utc || "",
+  scheduledArr: flight.arrival?.scheduledTime?.local || "",
+  scheduledArrUtc: flight.arrival?.scheduledTime?.utc || "",
+  revisedDep: flight.departure?.revisedTime?.local || "",
+  revisedArr: flight.arrival?.revisedTime?.local || "",
+  status: flight.status || "",
+  delayMinutes,
+  isCargo: flight.isCargo || false,
+};
 
 app.get("/aircraft-photo", async (req, res) => {
   try {
