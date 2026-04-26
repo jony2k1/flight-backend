@@ -456,7 +456,170 @@ Return ONLY valid JSON, no markdown:
   }
 });
 
-// ── FLIGHT INFO (AeroDataBox) ─────────────────────────────────
+// ── FLIGHT INFO FALLBACK HELPERS ──────────────────────────────
+// Convert minutes → "H:MM" string used by frontend
+function minsToHHMM(mins) {
+  if (!mins || mins <= 0) return "";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h}:${String(m).padStart(2, "0")}`;
+}
+
+// Build empty/default result shape so frontend never crashes on missing fields
+function emptyResult(fn) {
+  return {
+    found: true,
+    flightNumber: fn, callSign: "", airline: "", airlineIata: "", airlineIcao: "",
+    from: "", fromIcao: "", fromCity: "", fromName: "",
+    fromTerminal: "", fromGate: "", fromCheckInDesk: "", fromRunway: "",
+    to: "", toIcao: "", toCity: "", toName: "",
+    toTerminal: "", toGate: "", toRunway: "", baggageBelt: "",
+    aircraft: "", aircraftReg: "",
+    distanceKm: 0, flightTime: "",
+    scheduledDep: "", scheduledDepUtc: "", scheduledArr: "", scheduledArrUtc: "",
+    revisedDep: "", revisedDepUtc: "", revisedArr: "", revisedArrUtc: "",
+    predictedDep: "", predictedArr: "",
+    actualDep: "", actualDepUtc: "", actualArr: "", actualArrUtc: "",
+    status: "", codeshareStatus: "", delayMinutes: 0, isCargo: false,
+    _source: "",
+  };
+}
+
+// AirLabs SCHEDULES endpoint — has terminal/gate/baggage on paid tiers
+async function fetchAirLabsSchedule(fn, date) {
+  const key = process.env.AIRLABS_API_KEY;
+  if (!key) return null;
+  try {
+    const r = await axios.get(
+      `https://airlabs.co/api/v9/schedules?flight_iata=${fn}&api_key=${key}`,
+      { timeout: 8000 }
+    );
+    const arr = r.data?.response;
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    let f = arr[0];
+    if (date) {
+      const m = arr.find(x => (x.dep_time || "").startsWith(date));
+      if (m) f = m;
+    }
+    const out = emptyResult(fn);
+    out.flightNumber = f.flight_iata || fn;
+    out.callSign = f.flight_icao || "";
+    out.airline = f.airline_name || "";
+    out.airlineIata = f.airline_iata || "";
+    out.airlineIcao = f.airline_icao || "";
+    out.from = (f.dep_iata || "").toUpperCase();
+    out.fromIcao = f.dep_icao || "";
+    out.fromCity = f.dep_city || "";
+    out.fromName = f.dep_name || "";
+    out.fromTerminal = f.dep_terminal || "";
+    out.fromGate = f.dep_gate || "";
+    out.to = (f.arr_iata || "").toUpperCase();
+    out.toIcao = f.arr_icao || "";
+    out.toCity = f.arr_city || "";
+    out.toName = f.arr_name || "";
+    out.toTerminal = f.arr_terminal || "";
+    out.toGate = f.arr_gate || "";
+    out.baggageBelt = f.arr_baggage || "";
+    out.aircraft = f.aircraft_icao || "";
+    out.flightTime = minsToHHMM(f.duration);
+    out.scheduledDep = f.dep_time || "";
+    out.scheduledDepUtc = f.dep_time_utc || f.dep_time || "";
+    out.scheduledArr = f.arr_time || "";
+    out.scheduledArrUtc = f.arr_time_utc || f.arr_time || "";
+    out.revisedDep = f.dep_estimated || "";
+    out.revisedArr = f.arr_estimated || "";
+    out.actualDep = f.dep_actual || "";
+    out.actualArr = f.arr_actual || "";
+    out.status = f.status || "";
+    out.delayMinutes = f.delayed || 0;
+    out._source = "airlabs-schedule";
+    return out;
+  } catch (e) {
+    console.log("AirLabs schedule error:", e.message);
+    return null;
+  }
+}
+
+// AirLabs real-time FLIGHT endpoint — works on free tier, gives live position
+async function fetchAirLabsLive(fn) {
+  const key = process.env.AIRLABS_API_KEY;
+  if (!key) return null;
+  try {
+    const r = await axios.get(
+      `https://airlabs.co/api/v9/flight?flight_iata=${fn}&api_key=${key}`,
+      { timeout: 8000 }
+    );
+    const f = r.data?.response;
+    if (!f || !f.flight_iata) return null;
+    const out = emptyResult(fn);
+    out.flightNumber = f.flight_iata || fn;
+    out.callSign = f.flight_icao || "";
+    out.airlineIata = f.airline_iata || "";
+    out.airlineIcao = f.airline_icao || "";
+    out.from = (f.dep_iata || "").toUpperCase();
+    out.fromIcao = f.dep_icao || "";
+    out.to = (f.arr_iata || "").toUpperCase();
+    out.toIcao = f.arr_icao || "";
+    out.aircraft = f.aircraft_icao || "";
+    out.aircraftReg = f.reg_number || "";
+    out.status = f.status || "";
+    out._source = "airlabs-live";
+    return out;
+  } catch (e) {
+    console.log("AirLabs live error:", e.message);
+    return null;
+  }
+}
+
+// AviationStack — last resort fallback (HTTP only on free tier)
+async function fetchAviationStack(fn, date) {
+  const key = process.env.AVIATIONSTACK_KEY || API_KEY;
+  if (!key) return null;
+  try {
+    let url = `http://api.aviationstack.com/v1/flights?access_key=${key}&flight_iata=${fn}&limit=1`;
+    if (date) url += `&flight_date=${date}`;
+    const r = await axios.get(url, { timeout: 9000 });
+    const data = r.data?.data;
+    if (!Array.isArray(data) || data.length === 0) return null;
+    const f = data[0];
+    const out = emptyResult(fn);
+    out.flightNumber = f.flight?.iata || fn;
+    out.callSign = f.flight?.icao || "";
+    out.airline = f.airline?.name || "";
+    out.airlineIata = f.airline?.iata || "";
+    out.airlineIcao = f.airline?.icao || "";
+    out.from = (f.departure?.iata || "").toUpperCase();
+    out.fromIcao = f.departure?.icao || "";
+    out.fromName = f.departure?.airport || "";
+    out.fromTerminal = f.departure?.terminal || "";
+    out.fromGate = f.departure?.gate || "";
+    out.to = (f.arrival?.iata || "").toUpperCase();
+    out.toIcao = f.arrival?.icao || "";
+    out.toName = f.arrival?.airport || "";
+    out.toTerminal = f.arrival?.terminal || "";
+    out.toGate = f.arrival?.gate || "";
+    out.baggageBelt = f.arrival?.baggage || "";
+    out.aircraft = f.aircraft?.iata || "";
+    out.aircraftReg = f.aircraft?.registration || "";
+    out.scheduledDep = f.departure?.scheduled || "";
+    out.scheduledDepUtc = f.departure?.scheduled || "";
+    out.scheduledArr = f.arrival?.scheduled || "";
+    out.scheduledArrUtc = f.arrival?.scheduled || "";
+    out.revisedDep = f.departure?.estimated || "";
+    out.revisedArr = f.arrival?.estimated || "";
+    out.actualDep = f.departure?.actual || "";
+    out.actualArr = f.arrival?.actual || "";
+    out.status = f.flight_status || "";
+    out.delayMinutes = f.departure?.delay || 0;
+    out._source = "aviationstack";
+    return out;
+  } catch (e) {
+    console.log("AviationStack error:", e.message);
+    return null;
+  }
+}
+
+// ── FLIGHT INFO (AeroDataBox → AirLabs → AviationStack waterfall) ───
 const flightCache = {};
 
 app.get("/flight-info", async (req, res) => {
@@ -497,6 +660,34 @@ app.get("/flight-info", async (req, res) => {
     }
 
     if (!flight) {
+      // ── FALLBACK WATERFALL: AirLabs → AviationStack ────────────
+      console.log(`AeroDataBox: no data for ${fn}, trying fallbacks...`);
+      let fallback = null;
+
+      // 1. AirLabs schedule (richest fallback — has terminal/gate if plan supports)
+      for (const d of dates) {
+        fallback = await fetchAirLabsSchedule(fn, d);
+        if (fallback) break;
+      }
+
+      // 2. AirLabs live flight (real-time, works on free tier)
+      if (!fallback) fallback = await fetchAirLabsLive(fn);
+
+      // 3. AviationStack
+      if (!fallback) {
+        for (const d of dates) {
+          fallback = await fetchAviationStack(fn, d);
+          if (fallback) break;
+        }
+      }
+
+      if (fallback) {
+        console.log(`✓ Fallback hit (${fallback._source}) for ${fn}`);
+        flightCache[cacheKey] = { data: fallback, ts: Date.now() };
+        return res.json(fallback);
+      }
+
+      // All sources failed
       flightCache[cacheKey] = { data: { found: false }, ts: Date.now() };
       return res.json({ found: false });
     }
