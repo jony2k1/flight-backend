@@ -548,7 +548,7 @@ app.get("/flight-info", async (req, res) => {
       aircraft: flight.aircraft?.model || "",
       aircraftReg: flight.aircraft?.reg || "",
       distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
-      durationMins: (() => { const dep = new Date((flight.departure?.scheduledTime?.utc||"").replace(" ","T")); const arr = new Date((flight.arrival?.scheduledTime?.utc||"").replace(" ","T")); const apiMins = arr-dep > 0 ? Math.round((arr-dep)/60000) : 0; const distMins = Math.round((flight.greatCircleDistance?.km||0)/850*60); return apiMins > 0 && apiMins < 600 ? apiMins : distMins; })(),
+      distanceKm: Math.round(flight.greatCircleDistance?.km || 0),
       scheduledDep: flight.departure?.scheduledTime?.local || "",
       scheduledDepUtc: flight.departure?.scheduledTime?.utc || "",
       scheduledArr: flight.arrival?.scheduledTime?.local || "",
@@ -558,7 +558,6 @@ app.get("/flight-info", async (req, res) => {
       status: flight.status || "",
       delayMinutes,
       isCargo: flight.isCargo || false,
-      durationMins: Math.round((flight.greatCircleDistance?.km || 0) / 850 * 60),
     };
 
     flightCache[cacheKey] = { data: result, ts: Date.now() };
@@ -897,7 +896,7 @@ app.get("/flight-time", async (req, res) => {
   try {
     const { dep, arr } = req.query;
     const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/airports/iata/${dep}/distance-time/${arr}?flightTimeModel=ML01`,
+      `https://aerodatabox.p.rapidapi.com/airports/iata/${dep}/distance-time/${arr}?flightTimeModel=ML01&withDistance=true`,
       { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
     );
     res.json(r.data);
