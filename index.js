@@ -557,6 +557,7 @@ app.get("/flight-info", async (req, res) => {
       status: flight.status || "",
       delayMinutes,
       isCargo: flight.isCargo || false,
+      durationMins: Math.round((flight.greatCircleDistance?.km || 0) / 850 * 60),
     };
 
     flightCache[cacheKey] = { data: result, ts: Date.now() };
@@ -888,4 +889,16 @@ app.get('/country-photos', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Flight time between airports
+app.get("/flight-time", async (req, res) => {
+  try {
+    const { dep, arr } = req.query;
+    const r = await axios.get(
+      `https://aerodatabox.p.rapidapi.com/flights/airports/iata/${dep}/to/${arr}`,
+      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
+    );
+    res.json(r.data);
+  } catch(e) { res.json({ error: true }); }
 });
