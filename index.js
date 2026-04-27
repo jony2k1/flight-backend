@@ -456,6 +456,18 @@ Return ONLY valid JSON, no markdown:
   }
 });
 
+// ── RATE LIMIT TRACKER ────────────────────────────────────────
+// When an API returns 429/403 (rate limited / forbidden), pause it
+// for a cooldown period to avoid burning quota uselessly.
+const rateLimited = {};
+function isRateLimited(api) {
+  return rateLimited[api] && Date.now() < rateLimited[api];
+}
+function markRateLimited(api, hours = 24) {
+  rateLimited[api] = Date.now() + hours * 3600000;
+  console.log(`⚠️  ${api} rate limited — pausing for ${hours}h`);
+}
+
 // ── FLIGHT INFO FALLBACK HELPERS ──────────────────────────────
 // Convert minutes → "H:MM" string used by frontend
 function minsToHHMM(mins) {
@@ -489,11 +501,20 @@ function emptyResult(fn) {
 async function fetchAirLabsSchedule(fn, date) {
   const key = process.env.AIRLABS_API_KEY;
   if (!key) return null;
+  if (isRateLimited("airlabs-schedule")) return null;
   try {
     const r = await axios.get(
       `https://airlabs.co/api/v9/schedules?flight_iata=${fn}&api_key=${key}`,
       { timeout: 8000 }
     );
+    // AirLabs returns errors in body even on 200 (free tier blocks /schedules)
+    if (r.data?.error) {
+      const code = r.data.error.code || "";
+      if (String(code).includes("plan") || String(code).includes("forbidden")) {
+        markRateLimited("airlabs-schedule", 168); // 7 days — free tier doesn't allow this
+      }
+      return null;
+    }
     const arr = r.data?.response;
     if (!Array.isArray(arr) || arr.length === 0) return null;
     let f = arr[0];
@@ -535,6 +556,8 @@ async function fetchAirLabsSchedule(fn, date) {
     out._source = "airlabs-schedule";
     return out;
   } catch (e) {
+    const status = e.response?.status;
+    if (status === 429 || status === 403) markRateLimited("airlabs-schedule", 24);
     console.log("AirLabs schedule error:", e.message);
     return null;
   }
@@ -544,6 +567,7 @@ async function fetchAirLabsSchedule(fn, date) {
 async function fetchAirLabsLive(fn) {
   const key = process.env.AIRLABS_API_KEY;
   if (!key) return null;
+  if (isRateLimited("airlabs-live")) return null;
   try {
     const r = await axios.get(
       `https://airlabs.co/api/v9/flight?flight_iata=${fn}&api_key=${key}`,
@@ -562,10 +586,13 @@ async function fetchAirLabsLive(fn) {
     out.toIcao = f.arr_icao || "";
     out.aircraft = f.aircraft_icao || "";
     out.aircraftReg = f.reg_number || "";
+    out.aircraftIcao24 = f.hex || "";
     out.status = f.status || "";
     out._source = "airlabs-live";
     return out;
   } catch (e) {
+    const status = e.response?.status;
+    if (status === 429 || status === 403) markRateLimited("airlabs-live", 24);
     console.log("AirLabs live error:", e.message);
     return null;
   }
@@ -658,6 +685,116 @@ function mergeMissing(target, source) {
   return target;
 }
 
+// ── OPENSKY: live aircraft position via OAuth2 ────────────────
+// Token cached ~25 min. Used to enrich every flight result with
+// liveLat / liveLng / liveAltFt / liveSpeedKph / liveHeading.
+let openSkyToken = null;
+let openSkyTokenExpiry = 0;
+
+async function getOpenSkyToken() {
+  if (openSkyToken && Date.now() < openSkyTokenExpiry) return openSkyToken;
+  const clientId = process.env.OPENSKY_CLIENT_ID;
+  const clientSecret = process.env.OPENSKY_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  try {
+    const r = await axios.post(
+      "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token",
+      new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 8000 }
+    );
+    openSkyToken = r.data.access_token;
+    openSkyTokenExpiry = Date.now() + ((r.data.expires_in || 1800) - 60) * 1000;
+    return openSkyToken;
+  } catch (e) {
+    console.log("OpenSky token error:", e.message);
+    return null;
+  }
+}
+
+// Match aircraft on OpenSky by callsign or icao24 hex
+async function fetchOpenSkyPosition(callSign, icao24) {
+  const token = await getOpenSkyToken();
+  if (!token) return null;
+  try {
+    let url = "https://opensky-network.org/api/states/all";
+    if (icao24) url += `?icao24=${icao24.toLowerCase()}`;
+    const r = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 8000,
+    });
+    const states = r.data?.states;
+    if (!Array.isArray(states) || states.length === 0) return null;
+
+    // OpenSky state vector indexes:
+    // [0]icao24 [1]callsign [2]country [3]time_pos [4]last_contact
+    // [5]lng [6]lat [7]baro_alt [8]on_ground [9]velocity [10]heading [11]v_rate
+    let match = null;
+    if (callSign) {
+      const cs = String(callSign).toUpperCase().replace(/\s/g, "");
+      match = states.find(s => (s[1] || "").trim().toUpperCase() === cs);
+    }
+    if (!match && icao24) match = states[0];
+    if (!match) return null;
+
+    return {
+      liveIcao24: match[0] || "",
+      liveCallSign: (match[1] || "").trim(),
+      liveLng: match[5] ?? null,
+      liveLat: match[6] ?? null,
+      liveAltMeters: match[7] ?? null,
+      liveAltFt: match[7] != null ? Math.round(match[7] * 3.281) : null,
+      liveOnGround: !!match[8],
+      liveSpeedMs: match[9] ?? null,
+      liveSpeedKph: match[9] != null ? Math.round(match[9] * 3.6) : null,
+      liveHeading: match[10] ?? null,
+      liveVerticalRate: match[11] ?? null,
+      liveLastContact: match[4] ?? null,
+    };
+  } catch (e) {
+    console.log("OpenSky fetch error:", e.message);
+    return null;
+  }
+}
+
+// Enrich any flight result with live position data
+async function enrichLivePosition(result) {
+  if (!result || result.found === false) return result;
+  const cs = result.callSign
+    || (result.airlineIcao && result.flightNumber
+        ? result.airlineIcao + String(result.flightNumber).replace(/^[A-Z]+/i, "")
+        : null);
+  if (!cs && !result.aircraftIcao24) return result;
+  const live = await fetchOpenSkyPosition(cs, result.aircraftIcao24);
+  if (live) {
+    Object.assign(result, live);
+    result._source = (result._source ? result._source + "+" : "") + "opensky";
+  }
+  return result;
+}
+
+// ── FILL TIMES: copy actual/revised → scheduled if scheduled missing ──
+// This ensures frontend always has SOMETHING to display (--:--  → real time)
+function fillTimeFallback(result) {
+  if (!result) return result;
+  if (!result.scheduledDep) {
+    result.scheduledDep = result.actualDep || result.revisedDep || result.predictedDep || "";
+  }
+  if (!result.scheduledDepUtc) {
+    result.scheduledDepUtc = result.actualDepUtc || result.revisedDepUtc || result.scheduledDep || "";
+  }
+  if (!result.scheduledArr) {
+    result.scheduledArr = result.actualArr || result.revisedArr || result.predictedArr || "";
+  }
+  if (!result.scheduledArrUtc) {
+    result.scheduledArrUtc = result.actualArrUtc || result.revisedArrUtc || result.scheduledArr || "";
+  }
+  return result;
+}
+
 // ── INFER STATUS: backend safety net for misreported "Unknown" ────
 function inferStatus(result) {
   if (!result) return result;
@@ -706,7 +843,12 @@ app.get("/flight-info", async (req, res) => {
     const cacheKey = date ? `v2-${fn}-${date}` : `v2-${fn}`;
 
     if (flightCache[cacheKey] && (Date.now() - flightCache[cacheKey].ts) < 3600000 && flightCache[cacheKey].data.status !== "Arrived") {
-      return res.json(flightCache[cacheKey].data);
+      // Re-run status inference on cached data so a flight cached as "Active"/"En Route"
+      // automatically becomes "Arrived" once enough time has passed since arrival,
+      // without burning another API call.
+      const cached = flightCache[cacheKey].data;
+      inferStatus(cached);
+      return res.json(cached);
     }
 
     const dates = date ? [date] : [
@@ -734,43 +876,45 @@ app.get("/flight-info", async (req, res) => {
     }
 
     if (!flight) {
-      // ── FALLBACK WATERFALL: AirLabs schedule → AviationStack → AirLabs live ──
-      console.log(`AeroDataBox: no data for ${fn}, trying fallbacks...`);
+      // ── FALLBACK WATERFALL: try ALL sources and MERGE data ──────
+      // Critical: even partial data from each source combined gives full picture
+      console.log(`AeroDataBox: no data for ${fn}, trying all fallbacks...`);
       let fallback = null;
+      const sources = [];
 
-      // 1. AirLabs schedule (richest fallback — terminal/gate/baggage if plan supports)
+      // 1. AirLabs schedule (terminal/gate if plan supports)
       for (const d of dates) {
-        fallback = await fetchAirLabsSchedule(fn, d);
-        if (fallback) break;
+        const r = await fetchAirLabsSchedule(fn, d);
+        if (r) { fallback = r; sources.push("airlabs-schedule"); break; }
       }
 
-      // 2. AviationStack (good for scheduled times + terminal data)
-      if (!fallback) {
-        for (const d of dates) {
-          fallback = await fetchAviationStack(fn, d);
-          if (fallback) break;
-        }
+      // 2. AviationStack (almost always has scheduled times) — ALWAYS try, merge
+      let avStackData = null;
+      for (const d of dates) {
+        avStackData = await fetchAviationStack(fn, d);
+        if (avStackData) { sources.push("aviationstack"); break; }
+      }
+      if (avStackData) {
+        if (!fallback) fallback = avStackData;
+        else fallback = mergeMissing(fallback, avStackData);
       }
 
-      // 3. AirLabs live flight (last resort — confirms flight exists, no schedule)
-      if (!fallback) {
-        fallback = await fetchAirLabsLive(fn);
-        // If we ONLY got live data, try AviationStack to enrich with schedule
-        if (fallback && !fallback.scheduledDep) {
-          for (const d of dates) {
-            const enrich = await fetchAviationStack(fn, d);
-            if (enrich) {
-              fallback = mergeMissing(fallback, enrich);
-              fallback._source = `${fallback._source}+aviationstack`;
-              break;
-            }
-          }
-        }
+      // 3. AirLabs live (real-time confirmation) — ALWAYS try, merge
+      const liveData = await fetchAirLabsLive(fn);
+      if (liveData) {
+        sources.push("airlabs-live");
+        if (!fallback) fallback = liveData;
+        else fallback = mergeMissing(fallback, liveData);
       }
 
       if (fallback) {
+        fallback._source = sources.join("+");
+        // Fill scheduled times from actual/revised if missing
+        fallback = fillTimeFallback(fallback);
         // Enrich missing distance/duration from AeroDataBox distance-time
         fallback = await enrichDistance(fallback);
+        // Enrich with live position from OpenSky (FREE)
+        fallback = await enrichLivePosition(fallback);
         // Infer status from arrival time (fixes "En Route" when landed)
         fallback = inferStatus(fallback);
         console.log(`✓ Fallback hit (${fallback._source}) for ${fn}`);
@@ -778,8 +922,8 @@ app.get("/flight-info", async (req, res) => {
         return res.json(fallback);
       }
 
-      // All sources failed
-      flightCache[cacheKey] = { data: { found: false }, ts: Date.now() };
+      // All sources failed — short cache so we retry sooner
+      flightCache[cacheKey] = { data: { found: false }, ts: Date.now() - 3300000 }; // expires in 5 min
       return res.json({ found: false });
     }
 
@@ -894,6 +1038,10 @@ result.fromCity = HUB_CITIES[hub] || hub;
     } catch(e) {}
   }
 }
+    // Fill scheduled times from actual/revised if missing
+    fillTimeFallback(result);
+    // Enrich with live position from OpenSky (FREE)
+    await enrichLivePosition(result);
     // Apply status inference to fix "Unknown"/"Scheduled" when flight has actually landed
     inferStatus(result);
 
