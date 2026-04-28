@@ -1138,6 +1138,19 @@ app.get("/aircraft-photo", async (req, res) => {
   }
 });
 
+// ── AIRPORT COORDS (free, fast — uses local airportsCache) ───
+// Powers the standalone Cabin tracker setup form. No external API call.
+app.get("/airport-coords", (req, res) => {
+  try {
+    const iata = (req.query.iata || "").toUpperCase().trim();
+    if (!iata) return res.json({ error: "iata required" });
+    const ap = airportsCache.find(a => a.iata === iata);
+    if (!ap) return res.json({ error: "not found" });
+    res.set("Cache-Control", "public, max-age=86400");
+    res.json({ iata: ap.iata, lat: ap.lat, lng: ap.lng, city: ap.city, name: ap.name, country: ap.country });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 // ── AIRPORT INFO ──────────────────────────────────────────────
 app.get("/airport-info", async (req, res) => {
   try {
