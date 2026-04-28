@@ -839,8 +839,8 @@ app.get("/flight-info", async (req, res) => {
     if (!flightNumber) return res.status(400).json({ error: "Flight number required" });
 
     const fn = flightNumber.toUpperCase().replace(/\s/g, "");
-    // v2 = added gates, actual times, runways etc. Bump on schema changes.
-    const cacheKey = date ? `v2-${fn}-${date}` : `v2-${fn}`;
+    // v3 = added fromLat/fromLng/toLat/toLng for OfflineTracker
+    const cacheKey = date ? `v3-${fn}-${date}` : `v3-${fn}`;
 
     if (flightCache[cacheKey] && (Date.now() - flightCache[cacheKey].ts) < 3600000 && flightCache[cacheKey].data.status !== "Arrived") {
       // Re-run status inference on cached data so a flight cached as "Active"/"En Route"
@@ -917,6 +917,13 @@ app.get("/flight-info", async (req, res) => {
         fallback = await enrichLivePosition(fallback);
         // Infer status from arrival time (fixes "En Route" when landed)
         fallback = inferStatus(fallback);
+        // Enrich with airport coordinates (for OfflineTracker)
+        if (airportsCache.length > 0) {
+          const dep = airportsCache.find(a => a.iata === fallback.from);
+          const arr = airportsCache.find(a => a.iata === fallback.to);
+          if (dep) { fallback.fromLat = dep.lat; fallback.fromLng = dep.lng; }
+          if (arr) { fallback.toLat = arr.lat;  fallback.toLng = arr.lng;  }
+        }
         console.log(`✓ Fallback hit (${fallback._source}) for ${fn}`);
         flightCache[cacheKey] = { data: fallback, ts: Date.now() };
         return res.json(fallback);
@@ -1000,6 +1007,14 @@ app.get("/flight-info", async (req, res) => {
       delayMinutes,
       isCargo: flight.isCargo || false,
     };
+
+    // ── ENRICH with airport coordinates (for OfflineTracker visualization) ──
+    if (airportsCache.length > 0) {
+      const depAp = airportsCache.find(a => a.iata === result.from);
+      const arrAp = airportsCache.find(a => a.iata === result.to);
+      if (depAp) { result.fromLat = depAp.lat; result.fromLng = depAp.lng; }
+      if (arrAp) { result.toLat = arrAp.lat;  result.toLng = arrAp.lng;  }
+    }
 // If departure missing but we have arrival, try flight-time with known hub
 if (!result.from && result.airlineIata) {
   const AIRLINE_HUBS = {
