@@ -41,7 +41,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "12mb" }));
 
 const API_KEY = "d10d111151530107984df4d86f34f6db";
 const WEATHER_KEY = "bd5e378503939ddaee76f12ad7a97608";
@@ -868,7 +868,10 @@ app.get("/flight-info", async (req, res) => {
         );
         if (Array.isArray(r.data) && r.data.length > 0) {
           flight = r.data[0];
-          if (flight.aircraft?.reg) break;
+          // First successful match wins — was previously requiring aircraft.reg
+          // which made us fall through today's pre-departure data and return
+          // yesterday's already-arrived flight, so live flights showed "Arrived".
+          break;
         }
       } catch (e) {
         if (e.response?.status === 429) break;
@@ -1408,6 +1411,72 @@ app.get("/route-flights", async (req, res) => {
     res.json({ flights: matching });
   } catch (err) {
     res.json({ flights: [], error: err.message });
+  }
+});
+
+// ── SCAN BOARDING PASS (Claude Vision) ───────────────────────
+// Frontend sends { image: <base64>, mediaType: "image/jpeg" }
+// Returns Anthropic Messages API response shape (frontend reads data.content[0].text)
+app.post("/scan-boarding-pass", async (req, res) => {
+  try {
+    const { image, mediaType } = req.body || {};
+    if (!image) return res.status(400).json({ error: "No image provided" });
+    if (!process.env.ANTHROPIC_KEY) return res.status(500).json({ error: "ANTHROPIC_KEY not set on server" });
+
+    const mt = mediaType && /^image\/(jpeg|png|gif|webp)$/.test(mediaType) ? mediaType : "image/jpeg";
+
+    const prompt = `You are reading a boarding pass photo. Extract the flight details and return ONLY a JSON object — no markdown, no commentary.
+
+Fields:
+{
+  "from": "IATA code of departure airport (3 letters)",
+  "fromCity": "Full city name of departure",
+  "to": "IATA code of arrival airport (3 letters)",
+  "toCity": "Full city name of arrival",
+  "airline": "Airline name (e.g. Emirates, IndiGo, Saudia)",
+  "flightNumber": "Flight number including airline code (e.g. EK203, 6E456)",
+  "date": "YYYY-MM-DD format",
+  "departure": "HH:MM 24-hour local departure time",
+  "arrival": "HH:MM 24-hour local arrival time (only if printed)",
+  "seat": "Seat number (e.g. 12A)",
+  "gate": "Gate number/letter if printed",
+  "pnr": "Booking reference / PNR if printed",
+  "passenger": "Passenger name if clearly readable"
+}
+
+Rules:
+- Use null for any field that is not clearly visible on the pass.
+- If city names are missing, infer from IATA code (BOM=Mumbai, DEL=Delhi, JED=Jeddah, RUH=Riyadh, DXB=Dubai, LHR=London, JFK=New York, etc).
+- Convert any date to YYYY-MM-DD.
+- If you cannot read a boarding pass at all, return: {"error":"not_a_boarding_pass"}
+- Return ONLY the JSON object. No \`\`\`json fences.`;
+
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-haiku-4-5",
+        max_tokens: 600,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mt, data: image } },
+            { type: "text", text: prompt }
+          ]
+        }]
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_KEY,
+          "anthropic-version": "2023-06-01",
+        },
+        timeout: 45000,
+      }
+    );
+    res.json(response.data);
+  } catch (error) {
+    console.error("scan-boarding-pass error:", error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data?.error?.message || error.message });
   }
 });
 
