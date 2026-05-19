@@ -284,7 +284,7 @@ If no booking found return: null` }]
 // ── GMAIL EMAILS ──────────────────────────────────────────────
 app.post("/gmail-emails", async (req, res) => {
   try {
-    const { accessToken } = req.body;
+    const { accessToken, afterDate } = req.body;
     if (!accessToken) return res.status(400).json({ error: "No access token" });
 
     const GMAIL_AIRLINE_DOMAINS = [
@@ -297,7 +297,22 @@ app.post("/gmail-emails", async (req, res) => {
       "egyptair.com", "biman-airlines.com", "thaiairways.com", "malaysiaairlines.com",
     ];
 
-    const query = GMAIL_AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ");
+    // Optional incremental sync — if afterDate is provided (epoch ms or YYYY/MM/DD),
+    // Gmail filters to only emails received after that point. Massively reduces
+    // API calls + AI costs on subsequent syncs.
+    let dateFilter = "";
+    if (afterDate) {
+      let g;
+      if (typeof afterDate === "number") {
+        const d = new Date(afterDate);
+        g = `${d.getUTCFullYear()}/${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+      } else {
+        g = String(afterDate).replace(/-/g, "/");
+      }
+      dateFilter = ` after:${g}`;
+    }
+
+    const query = GMAIL_AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ") + dateFilter;
     let allMessages = [];
     let pageToken = null;
 
