@@ -371,7 +371,21 @@ app.post("/gmail-emails", async (req, res) => {
     }
     res.json({ emails, total: emails.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // Surface the REAL Gmail API error so the user/frontend can see what's wrong.
+    // 403 from Gmail usually means: insufficient scope, Gmail API disabled, or
+    // user not in OAuth consent screen test users list. Generic 500 hid this.
+    const gErr = err?.response?.data?.error;
+    const status = err?.response?.status || 500;
+    const msg = gErr?.message
+      || (typeof gErr === "string" ? gErr : null)
+      || err?.message
+      || "Unknown error";
+    console.error("gmail-emails error:", status, JSON.stringify(gErr || err?.message));
+    res.status(status === 403 ? 403 : 500).json({
+      error: msg,
+      reason: gErr?.errors?.[0]?.reason || null,
+      status,
+    });
   }
 });
 
