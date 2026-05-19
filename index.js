@@ -312,13 +312,17 @@ app.post("/gmail-emails", async (req, res) => {
       dateFilter = ` after:${g}`;
     }
 
-    // ── Subject-level filter — runs at Gmail's side, not ours. ────────────────
-    // Without this, we fetch ALL emails from airline domains (status updates,
-    // OTPs, miles, promos, surveys) and discard 80% client-side. With it, Gmail
-    // returns ONLY booking-looking emails → 5-10x less data, 5-10x faster.
-    const subjectFilter = ' AND (subject:(booking OR itinerary OR confirmed OR confirmation OR "e-ticket" OR eticket OR reservation OR trip OR PNR OR "booking ref" OR "your flight" OR "flight booked"))';
-    const fromFilter = "(" + GMAIL_AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ") + ")";
-    const query = fromFilter + subjectFilter + dateFilter;
+    // ── Gmail query — keep PERMISSIVE so we don't miss legit booking emails ──
+    // We intentionally do NOT filter by subject here. Subject filters at the
+    // Gmail level risk missing valid bookings:
+    //   - Saudia notifications often arrive in Arabic ("تأكيد الحجز")
+    //   - IndiGo subjects vary ("Your e-ticket", "Trip details", "Booked!")
+    //   - Some airlines use ticket numbers as subject ("EK203 - 25 Dec")
+    //   - Forwarded bookings start with "Fwd:"
+    // Frontend has BOOKING_KEYWORDS + SKIP_KEYWORDS filters that work on the
+    // full subject+body text — those are battle-tested. Keep that as the
+    // smart filter layer; let Gmail return broad results.
+    const query = GMAIL_AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ") + dateFilter;
 
     // ── Cap message count — protects against frequent flyers with 10k+ emails ─
     // Render Starter has a 90-sec request timeout. Even with parallel fetching,
