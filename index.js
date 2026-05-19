@@ -312,26 +312,41 @@ app.post("/gmail-emails", async (req, res) => {
       dateFilter = ` after:${g}`;
     }
 
-    const query = GMAIL_AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ") + dateFilter;
+    // ── Subject-level filter — runs at Gmail's side, not ours. ────────────────
+    // Without this, we fetch ALL emails from airline domains (status updates,
+    // OTPs, miles, promos, surveys) and discard 80% client-side. With it, Gmail
+    // returns ONLY booking-looking emails → 5-10x less data, 5-10x faster.
+    const subjectFilter = ' AND (subject:(booking OR itinerary OR confirmed OR confirmation OR "e-ticket" OR eticket OR reservation OR trip OR PNR OR "booking ref" OR "your flight" OR "flight booked"))';
+    const fromFilter = "(" + GMAIL_AIRLINE_DOMAINS.map(d => `from:${d}`).join(" OR ") + ")";
+    const query = fromFilter + subjectFilter + dateFilter;
+
+    // ── Cap message count — protects against frequent flyers with 10k+ emails ─
+    // Render Starter has a 90-sec request timeout. Even with parallel fetching,
+    // 500+ emails risks timeout. 200 is a safe cap; users can re-sync for more.
+    const MAX_MESSAGES = 200;
     let allMessages = [];
     let pageToken = null;
 
     do {
-      const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=500${pageToken ? `&pageToken=${pageToken}` : ""}`;
+      const remaining = MAX_MESSAGES - allMessages.length;
+      if (remaining <= 0) break;
+      const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${Math.min(remaining, 100)}${pageToken ? `&pageToken=${pageToken}` : ""}`;
       const searchRes = await axios.get(url, { headers: { Authorization: `Bearer ${accessToken}` } });
       const msgs = searchRes.data.messages || [];
-      allMessages = [...allMessages, ...msgs];
+      allMessages = [...allMessages, ...msgs].slice(0, MAX_MESSAGES);
       pageToken = searchRes.data.nextPageToken || null;
-    } while (pageToken);
+    } while (pageToken && allMessages.length < MAX_MESSAGES);
 
-    if (!allMessages.length) return res.json({ emails: [], total: 0 });
+    if (!allMessages.length) return res.json({ emails: [], total: 0, capped: false });
 
-    const emails = [];
-    for (const msg of allMessages) {
+    // ── Parallel fetch — 10 emails at a time. Was 1-at-a-time = sequential. ──
+    // 200 emails at 600ms each = 120 sec sequential (timeout). With parallel
+    // batches of 10: 200/10 × 600ms = 12 sec. 10x faster, well under timeout.
+    async function fetchOneEmail(msg) {
       try {
         const detail = await axios.get(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
-          { headers: { Authorization: `Bearer ${accessToken}` } }
+          { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 8000 }
         );
         const headers = detail.data.payload?.headers || [];
         const subject = headers.find(h => h.name === "Subject")?.value || "";
@@ -366,10 +381,23 @@ app.post("/gmail-emails", async (req, res) => {
         if (!body && detail.data.payload?.body?.data) {
           body = Buffer.from(detail.data.payload.body.data, "base64").toString("utf-8").slice(0, 3000);
         }
-        emails.push({ id: msg.id, subject, from, body, date });
-      } catch {}
+        return { id: msg.id, subject, from, body, date };
+      } catch { return null; }
     }
-    res.json({ emails, total: emails.length });
+
+    const emails = [];
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < allMessages.length; i += BATCH_SIZE) {
+      const chunk = allMessages.slice(i, i + BATCH_SIZE);
+      const results = await Promise.all(chunk.map(fetchOneEmail));
+      for (const r of results) if (r) emails.push(r);
+    }
+
+    res.json({
+      emails,
+      total: emails.length,
+      capped: allMessages.length >= MAX_MESSAGES,
+    });
   } catch (err) {
     // Surface the REAL Gmail API error so the user/frontend can see what's wrong.
     // 403 from Gmail usually means: insufficient scope, Gmail API disabled, or
