@@ -1766,7 +1766,9 @@ app.post("/generate-pkpass", async (req, res) => {
         format: "PKBarcodeFormatQR",
         message: s(qrPayload, `${s(flight.from)}-${s(flight.to)}-${s(flight.date)}`),
         messageEncoding: "iso-8859-1",
-        altText: s(flight.pnr, s(flight.bookingRef, ""))
+        // altText shown below barcode — must never be empty. Falls through:
+        // PNR → booking ref → flight number → generic "Boarding Pass"
+        altText: s(flight.pnr, s(flight.bookingRef, s(flight.flightNumber, "Boarding Pass"))),
       }]
     };
 
