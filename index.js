@@ -1659,6 +1659,26 @@ function cleanPemBuffer(buf) {
   return Buffer.from(text.slice(beginMatch.index, lastEnd.index + lastEnd[0].length), "utf8");
 }
 
+// Convert a certificate buffer to PEM format, handling both PEM input (just clean it)
+// and DER input (binary .cer file like Apple's WWDR cert from their website).
+// node-forge ships with passkit-generator so it's already installed.
+function toPemCert(buf) {
+  const text = buf.toString("utf8");
+  if (text.includes("-----BEGIN CERTIFICATE-----")) {
+    return cleanPemBuffer(buf);
+  }
+  // DER format → convert to PEM using node-forge
+  const forge = require("node-forge");
+  try {
+    const binary = buf.toString("binary");
+    const asn1 = forge.asn1.fromDer(binary);
+    const cert = forge.pki.certificateFromAsn1(asn1);
+    return Buffer.from(forge.pki.certificateToPem(cert), "utf8");
+  } catch (e) {
+    throw new Error("Certificate is neither valid PEM nor DER format: " + e.message);
+  }
+}
+
 app.post("/generate-pkpass", async (req, res) => {
   try {
     const { flight = {}, passenger } = req.body || {};
@@ -1672,13 +1692,10 @@ app.post("/generate-pkpass", async (req, res) => {
       if (!process.env[k]) return res.status(500).json({ error: `Missing env var: ${k}` });
     }
 
-    // Decode + clean PEM content (strip "Bag Attributes" metadata that openssl adds)
-    const signerCert = cleanPemBuffer(Buffer.from(process.env.APPLE_PASS_SIGNER_CERT_B64, "base64"));
+    // Decode + normalize certs to PEM format (handles PEM-with-Bag-Attributes OR DER input)
+    const signerCert = toPemCert(Buffer.from(process.env.APPLE_PASS_SIGNER_CERT_B64, "base64"));
     const signerKey  = cleanPemBuffer(Buffer.from(process.env.APPLE_PASS_SIGNER_KEY_B64, "base64"));
-    // WWDR cert can be either DER or PEM in the env var. If it has a -----BEGIN-----
-    // header, treat as PEM and clean it; otherwise pass DER bytes straight through.
-    const wwdrRaw = Buffer.from(process.env.APPLE_PASS_WWDR_B64, "base64");
-    const wwdrCert = wwdrRaw.toString("utf8").includes("-----BEGIN") ? cleanPemBuffer(wwdrRaw) : wwdrRaw;
+    const wwdrCert   = toPemCert(Buffer.from(process.env.APPLE_PASS_WWDR_B64, "base64"));
     // If the user re-extracted the key with -nodes (unencrypted), no password needed
     const signerKeyPassphrase = process.env.APPLE_PASS_PASSWORD || undefined;
 
