@@ -3,6 +3,8 @@ const cors = require("cors");
 const axios = require("axios");
 const https = require("https");
 const { parse } = require("csv-parse");
+const { PKPass } = require("passkit-generator");
+const sharp = require("sharp");
 
 let airportsCache = [];
 
@@ -1587,6 +1589,147 @@ Rules:
   } catch (error) {
     console.error("scan-boarding-pass error:", error.response?.data || error.message);
     res.status(500).json({ error: error.response?.data?.error?.message || error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APPLE WALLET — generate a signed .pkpass for a flight
+// Env vars required (set on Render):
+//   APPLE_PASS_SIGNER_CERT_B64   base64 of signerCert.pem (extracted from .p12)
+//   APPLE_PASS_SIGNER_KEY_B64    base64 of signerKey.pem  (extracted from .p12)
+//   APPLE_PASS_WWDR_B64          base64 of AppleWWDRCAG4.cer
+//   APPLE_PASS_PASSWORD          the password you set when exporting the .p12
+//   APPLE_TEAM_ID                10-char Apple Team ID (Flownto: 329H67W845)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Cache the icon buffers — fetching + resizing the Flownto logo once at boot
+// is much faster than redoing it on every pass generation.
+let _passIconCache = null;
+async function loadPassIcons() {
+  if (_passIconCache) return _passIconCache;
+  try {
+    const r = await axios.get("https://www.flownto.app/logo.png", {
+      responseType: "arraybuffer", timeout: 8000,
+    });
+    const src = Buffer.from(r.data);
+    _passIconCache = {
+      "icon.png":    await sharp(src).resize(29, 29, { fit: "contain", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
+      "icon@2x.png": await sharp(src).resize(58, 58, { fit: "contain", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
+      "icon@3x.png": await sharp(src).resize(87, 87, { fit: "contain", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
+      "logo.png":    await sharp(src).resize(160, 50, { fit: "inside", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
+      "logo@2x.png": await sharp(src).resize(320, 100, { fit: "inside", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
+      "logo@3x.png": await sharp(src).resize(480, 150, { fit: "inside", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
+    };
+  } catch (e) {
+    // Fallback — solid gold square if remote fetch fails
+    const gold = await sharp({
+      create: { width: 87, height: 87, channels: 4, background: { r:201,g:168,b:76, alpha:1 } }
+    }).png().toBuffer();
+    _passIconCache = {
+      "icon.png":    await sharp(gold).resize(29, 29).png().toBuffer(),
+      "icon@2x.png": await sharp(gold).resize(58, 58).png().toBuffer(),
+      "icon@3x.png": gold,
+      "logo.png":    await sharp(gold).resize(50, 50).png().toBuffer(),
+      "logo@2x.png": await sharp(gold).resize(100, 100).png().toBuffer(),
+      "logo@3x.png": await sharp(gold).resize(150, 150).png().toBuffer(),
+    };
+  }
+  return _passIconCache;
+}
+
+app.post("/generate-pkpass", async (req, res) => {
+  try {
+    const { flight = {}, passenger } = req.body || {};
+    if (!flight.from || !flight.to) {
+      return res.status(400).json({ error: "Missing flight.from or flight.to" });
+    }
+
+    // Verify env vars are set
+    const need = ["APPLE_PASS_SIGNER_CERT_B64", "APPLE_PASS_SIGNER_KEY_B64", "APPLE_PASS_WWDR_B64", "APPLE_PASS_PASSWORD", "APPLE_TEAM_ID"];
+    for (const k of need) {
+      if (!process.env[k]) return res.status(500).json({ error: `Missing env var: ${k}` });
+    }
+
+    const signerCert = Buffer.from(process.env.APPLE_PASS_SIGNER_CERT_B64, "base64");
+    const signerKey  = Buffer.from(process.env.APPLE_PASS_SIGNER_KEY_B64, "base64");
+    const wwdrCert   = Buffer.from(process.env.APPLE_PASS_WWDR_B64, "base64");
+    const signerKeyPassphrase = process.env.APPLE_PASS_PASSWORD;
+
+    // Format date for display
+    const dateStr = flight.date || "";
+    const serialNumber = `${flight.from}-${flight.to}-${flight.date || "x"}-${flight.flightNumber || "x"}-${Date.now()}`;
+
+    // QR payload — use real BCBP if provided, else build minimal IATA-like string
+    const qrPayload = flight.bcbpData
+      || `M1${(passenger || "PASSENGER").toUpperCase().padEnd(20, " ").slice(0,20)}E${(flight.pnr || "XXXXXXX").padEnd(7," ").slice(0,7)} ${flight.from}${flight.to}${(flight.flightNumber || "").replace(/\s/g, "").padEnd(7, " ").slice(0,7)} ${(flight.seat || "").padEnd(4, " ").slice(0,4)}`;
+
+    // Build pass.json
+    const passData = {
+      formatVersion: 1,
+      passTypeIdentifier: "pass.com.flownto.boarding",
+      teamIdentifier: process.env.APPLE_TEAM_ID,
+      serialNumber,
+      organizationName: "Flownto",
+      description: "Boarding Pass",
+      logoText: flight.airline || "Flownto",
+      // Cream + black theme matching the in-app boarding pass
+      backgroundColor: "rgb(251, 248, 238)",  // cream
+      foregroundColor: "rgb(26, 20, 8)",       // dark text
+      labelColor: "rgb(138, 125, 94)",         // muted gold for labels
+      boardingPass: {
+        transitType: "PKTransitTypeAir",
+        // Primary fields show as the giant route at top of pass
+        primaryFields: [
+          { key: "from", label: flight.fromCity || flight.from, value: flight.from },
+          { key: "to",   label: flight.toCity   || flight.to,   value: flight.to   }
+        ],
+        secondaryFields: [
+          { key: "passenger", label: "PASSENGER", value: (passenger || "").toUpperCase() || "—" },
+          { key: "flight",    label: "FLIGHT",    value: flight.flightNumber || "—" },
+          { key: "date",      label: "DATE",      value: dateStr || "—" }
+        ],
+        auxiliaryFields: [
+          { key: "gate",     label: "GATE",     value: flight.gate || "—" },
+          { key: "seat",     label: "SEAT",     value: flight.seat || "—" },
+          { key: "boarding", label: "BOARDING", value: flight.boarding || flight.departure || "—" }
+        ],
+        backFields: [
+          { key: "bookingref", label: "Booking Reference", value: flight.pnr || flight.bookingRef || "—" },
+          { key: "terminal",   label: "Terminal",          value: flight.terminal || "—" },
+          { key: "arrival",    label: "Arrival Time",      value: flight.arrival || "—" },
+          { key: "airline",    label: "Airline",           value: flight.airline || "—" },
+          { key: "note",       label: "Generated by",      value: "Flownto · flownto.app" }
+        ]
+      },
+      barcodes: [{
+        format: "PKBarcodeFormatQR",
+        message: qrPayload,
+        messageEncoding: "iso-8859-1",
+        altText: flight.pnr || flight.bookingRef || ""
+      }]
+    };
+
+    const icons = await loadPassIcons();
+    const passBuffers = {
+      "pass.json": Buffer.from(JSON.stringify(passData)),
+      ...icons,
+    };
+
+    const pass = new PKPass(passBuffers, {
+      wwdr: wwdrCert,
+      signerCert,
+      signerKey,
+      signerKeyPassphrase,
+    });
+
+    const buffer = pass.getAsBuffer();
+
+    res.setHeader("Content-Type", "application/vnd.apple.pkpass");
+    res.setHeader("Content-Disposition", `attachment; filename="flownto-${flight.from}-${flight.to}.pkpass"`);
+    res.send(buffer);
+  } catch (err) {
+    console.error("generate-pkpass error:", err?.message, err?.stack);
+    res.status(500).json({ error: err?.message || "Pass generation failed" });
   }
 });
 
