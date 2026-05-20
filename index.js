@@ -261,10 +261,16 @@ IMPORTANT RULES:
 - Even old emails from 2013, 2014, 2015 - still extract
 
 Return ONLY JSON, no markdown. Single flight:
-{"flightNumber":"6E456","from":"DEL","to":"BOM","fromCity":"Delhi","toCity":"Mumbai","date":"2019-05-10","seat":"12A","airline":"IndiGo","departure":"06:00","arrival":"08:10"}
+{"flightNumber":"6E456","from":"DEL","to":"BOM","fromCity":"Delhi","toCity":"Mumbai","date":"2019-05-10","seat":"12A","airline":"IndiGo","departure":"06:00","arrival":"08:10","pnr":"ABCDEF","terminal":"3","class":"Economy"}
+
+ALSO extract these when visible:
+- pnr: the 5-6 character booking reference / PNR / confirmation code (look near "PNR:", "Booking ref:", "Confirmation:", "Reservation:", "PNR Code:")
+- terminal: terminal number/letter (e.g. "3", "T2", "B")
+- class: cabin class (Economy / Business / First / Premium Economy)
+Use null if any of these is not visible.
 
 Multiple flights as array:
-[{"flightNumber":"6E456","from":"DEL","to":"BOM","fromCity":"Delhi","toCity":"Mumbai","date":"2019-05-10","seat":"12A","airline":"IndiGo","departure":"06:00","arrival":"08:10"},{"flightNumber":"6E457","from":"BOM","to":"DEL","fromCity":"Mumbai","toCity":"Delhi","date":"2019-05-15","seat":"14B","airline":"IndiGo","departure":"09:00","arrival":"11:10"}]
+[{"flightNumber":"6E456","from":"DEL","to":"BOM","fromCity":"Delhi","toCity":"Mumbai","date":"2019-05-10","seat":"12A","airline":"IndiGo","departure":"06:00","arrival":"08:10","pnr":"ABCDEF","class":"Economy"},{"flightNumber":"6E457","from":"BOM","to":"DEL","fromCity":"Mumbai","toCity":"Delhi","date":"2019-05-15","seat":"14B","airline":"IndiGo","departure":"09:00","arrival":"11:10","pnr":"ABCDEF","class":"Economy"}]
 
 Skip: OTP emails, miles/rewards, lounge invites, promotional offers, flight status updates.
 If no booking found return: null` }]
