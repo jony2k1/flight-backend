@@ -1643,6 +1643,22 @@ async function loadPassIcons() {
   return _passIconCache;
 }
 
+// Strip "Bag Attributes" metadata from PEM content. openssl pkcs12 -clcerts/-nocerts
+// extraction includes friendlyName/localKeyID lines BEFORE the actual PEM block,
+// which node-forge (passkit-generator's parser) rejects as "Invalid PEM formatted message".
+// This function keeps only the content between the first -----BEGIN and last -----END markers.
+function cleanPemBuffer(buf) {
+  const text = buf.toString("utf8");
+  const beginMatch = text.match(/-----BEGIN [A-Z0-9 ]+-----/);
+  if (!beginMatch) return buf; // not a PEM, pass through unchanged
+  const endRegex = /-----END [A-Z0-9 ]+-----/g;
+  let lastEnd = null;
+  let m;
+  while ((m = endRegex.exec(text)) !== null) lastEnd = m;
+  if (!lastEnd) return buf;
+  return Buffer.from(text.slice(beginMatch.index, lastEnd.index + lastEnd[0].length), "utf8");
+}
+
 app.post("/generate-pkpass", async (req, res) => {
   try {
     const { flight = {}, passenger } = req.body || {};
@@ -1656,8 +1672,9 @@ app.post("/generate-pkpass", async (req, res) => {
       if (!process.env[k]) return res.status(500).json({ error: `Missing env var: ${k}` });
     }
 
-    const signerCert = Buffer.from(process.env.APPLE_PASS_SIGNER_CERT_B64, "base64");
-    const signerKey  = Buffer.from(process.env.APPLE_PASS_SIGNER_KEY_B64, "base64");
+    // Decode + clean PEM content (strip "Bag Attributes" metadata that openssl adds)
+    const signerCert = cleanPemBuffer(Buffer.from(process.env.APPLE_PASS_SIGNER_CERT_B64, "base64"));
+    const signerKey  = cleanPemBuffer(Buffer.from(process.env.APPLE_PASS_SIGNER_KEY_B64, "base64"));
     const wwdrCert   = Buffer.from(process.env.APPLE_PASS_WWDR_B64, "base64");
     const signerKeyPassphrase = process.env.APPLE_PASS_PASSWORD;
 
