@@ -1675,8 +1675,12 @@ app.post("/generate-pkpass", async (req, res) => {
     // Decode + clean PEM content (strip "Bag Attributes" metadata that openssl adds)
     const signerCert = cleanPemBuffer(Buffer.from(process.env.APPLE_PASS_SIGNER_CERT_B64, "base64"));
     const signerKey  = cleanPemBuffer(Buffer.from(process.env.APPLE_PASS_SIGNER_KEY_B64, "base64"));
-    const wwdrCert   = Buffer.from(process.env.APPLE_PASS_WWDR_B64, "base64");
-    const signerKeyPassphrase = process.env.APPLE_PASS_PASSWORD;
+    // WWDR cert can be either DER or PEM in the env var. If it has a -----BEGIN-----
+    // header, treat as PEM and clean it; otherwise pass DER bytes straight through.
+    const wwdrRaw = Buffer.from(process.env.APPLE_PASS_WWDR_B64, "base64");
+    const wwdrCert = wwdrRaw.toString("utf8").includes("-----BEGIN") ? cleanPemBuffer(wwdrRaw) : wwdrRaw;
+    // If the user re-extracted the key with -nodes (unencrypted), no password needed
+    const signerKeyPassphrase = process.env.APPLE_PASS_PASSWORD || undefined;
 
     // Format date for display
     const dateStr = flight.date || "";
