@@ -288,13 +288,62 @@ app.post("/gmail-emails", async (req, res) => {
     if (!accessToken) return res.status(400).json({ error: "No access token" });
 
     const GMAIL_AIRLINE_DOMAINS = [
-      "saudia.com", "flynas.com", "flyadeal.com", "emirates.com",
-      "etihad.com", "flydubai.com", "gulfair.com", "airindia.in",
-      "goindigo.in", "customer.goindigo.in", "notification.saudia.com",
-      "emirates.email", "itinerary.flyscoot.com", "kuwaitairways.com",
-      "omanair.com", "spicejet.com", "flyscoot.com", "airarabia.com",
-      "jazeeraairways.com", "qatarairways.com", "turkishairlines.com",
-      "egyptair.com", "biman-airlines.com", "thaiairways.com", "malaysiaairlines.com",
+      // ── Middle East ────────────────────────────────────────────────
+      "saudia.com", "notification.saudia.com", "flynas.com", "flyadeal.com",
+      "emirates.com", "emirates.email", "etihad.com", "flydubai.com",
+      "gulfair.com", "kuwaitairways.com", "omanair.com",
+      "qatarairways.com", "airarabia.com", "jazeeraairways.com",
+      "royaljordanian.com",
+      // ── India ──────────────────────────────────────────────────────
+      "airindia.in", "airindia.com",
+      "goindigo.in", "customer.goindigo.in", "indigoindia.com",
+      "spicejet.com", "goair.in", "jetairways.com",
+      "airvistara.com", "vistara.com",
+      "travel-akasaair.in", "akasaair.com", "ixigo.com",
+      "starair.in", "alliedairways.com",
+      // ── Southeast Asia ─────────────────────────────────────────────
+      "flyscoot.com", "itinerary.flyscoot.com",
+      "airasia.com", "airasiago.com",
+      "thaiairways.com", "malaysiaairlines.com",
+      "singaporeair.com", "krisflyer.com",
+      "vietnamairlines.com", "vietjetair.com", "cebupacificair.com",
+      "philippineairlines.com", "biman-airlines.com", "garuda-indonesia.com",
+      "lionair.co.id", "batikair.com", "jetstar.com",
+      // ── Northeast Asia ─────────────────────────────────────────────
+      "cathaypacific.com", "cathaypac.com",
+      "koreanair.com", "flyasiana.com",
+      "ana.co.jp", "jal.com", "jal.co.jp",
+      "chinaairlines.com", "china-airlines.com",
+      "airchina.com", "csair.com",
+      // ── Europe ─────────────────────────────────────────────────────
+      "turkishairlines.com", "thy.com",
+      "lufthansa.com", "swiss.com", "austrian.com", "brussels-airlines.com",
+      "ba.com", "british-airways.com",
+      "airfrance.fr", "airfrance.com", "klm.com",
+      "iberia.com", "vueling.com", "ryanair.com", "easyjet.com",
+      "wizzair.com", "norwegian.com", "finnair.com",
+      "sas.se", "flysas.com", "aerlingus.com",
+      "tap.pt", "alitalia.com", "ita-airways.com",
+      "aeromexico.com", "aeroflot.com",
+      // ── Africa ─────────────────────────────────────────────────────
+      "egyptair.com", "ethiopianairlines.com",
+      "kenya-airways.com", "flykenya.com",
+      "rwandair.com", "flysaa.com", "airmauritius.com",
+      "royalairmaroc.com", "tunisair.com",
+      // ── Americas ───────────────────────────────────────────────────
+      "united.com", "ual.com",
+      "delta.com", "deltavacations.com",
+      "aa.com", "e.aa.com", "americanairlines.com",
+      "alaskaair.com", "alaskaairlines.com",
+      "southwest.com", "luv.southwest.com",
+      "jetblue.com", "spirit.com", "frontier.com",
+      "hawaiianair.com", "hawaiianairlines.com",
+      "aircanada.ca", "aircanada.com", "westjet.com",
+      "latam.com", "avianca.com",
+      "azul.com.br", "voegol.com.br",
+      // ── Oceania ────────────────────────────────────────────────────
+      "qantas.com", "virginaustralia.com", "airnewzealand.com",
+      "fijiairways.com",
     ];
 
     // Optional incremental sync — if afterDate is provided (epoch ms or YYYY/MM/DD),
