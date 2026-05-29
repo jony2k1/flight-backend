@@ -1,3 +1,4 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
@@ -5,6 +6,7 @@ const https = require("https");
 const { parse } = require("csv-parse");
 const { PKPass } = require("passkit-generator");
 const sharp = require("sharp");
+const jwt = require("jsonwebtoken");
 
 let airportsCache = [];
 
@@ -60,6 +62,35 @@ const AIRLINE_DOMAINS = [
 
 // ── PING ──────────────────────────────────────────────────────
 app.get('/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// ── MAPKIT JS TOKEN ───────────────────────────────────────────
+// Generates a short-lived JWT for Apple MapKit JS.
+// Requires 3 env vars set on the server:
+//   MAPKIT_TEAM_ID   — 10-char Apple Team ID (top-right on developer.apple.com)
+//   MAPKIT_KEY_ID    — Key ID from Certificates → Keys → MapKit JS key
+//   MAPKIT_PRIVATE_KEY — contents of the .p8 file (paste as one line, \n for newlines)
+app.get('/mapkit-token', (req, res) => {
+  const privateKey = (process.env.MAPKIT_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+  const keyId      = process.env.MAPKIT_KEY_ID;
+  const teamId     = process.env.MAPKIT_TEAM_ID;
+
+  if (!privateKey || !keyId || !teamId) {
+    return res.status(503).json({ error: 'MapKit credentials not configured on server' });
+  }
+
+  try {
+    const token = jwt.sign({}, privateKey, {
+      algorithm: 'ES256',
+      expiresIn: '1h',
+      issuer: teamId,
+      keyid: keyId,
+    });
+    res.type('text/plain').send(token);
+  } catch (e) {
+    console.error('[MapKit token]', e.message);
+    res.status(500).json({ error: 'Token generation failed: ' + e.message });
+  }
+});
 
 app.get("/", (req, res) => {
   res.json({ message: "✈️ Flight Backend Running!" });
@@ -746,15 +777,19 @@ async function fetchAviationStack(fn, date) {
     out.baggageBelt = f.arrival?.baggage || "";
     out.aircraft = f.aircraft?.iata || "";
     out.aircraftReg = f.aircraft?.registration || "";
-    out.scheduledDep = f.departure?.scheduled || "";
-    out.scheduledDepUtc = f.departure?.scheduled || "";
-    out.scheduledArr = f.arrival?.scheduled || "";
-    out.scheduledArrUtc = f.arrival?.scheduled || "";
-    out.revisedDep = f.departure?.estimated || "";
-    out.revisedArr = f.arrival?.estimated || "";
-    out.actualDep = f.departure?.actual || "";
-    out.actualArr = f.arrival?.actual || "";
-    out.status = f.flight_status || "";
+    out.scheduledDep    = f.departure?.scheduled || "";
+    out.scheduledDepUtc = f.departure?.scheduled || ""; // AviationStack returns ISO UTC here
+    out.scheduledArr    = f.arrival?.scheduled   || "";
+    out.scheduledArrUtc = f.arrival?.scheduled   || ""; // ISO UTC from AviationStack
+    out.revisedDep      = f.departure?.estimated || "";
+    out.revisedDepUtc   = f.departure?.estimated || "";
+    out.revisedArr      = f.arrival?.estimated   || "";
+    out.revisedArrUtc   = f.arrival?.estimated   || "";
+    out.actualDep       = f.departure?.actual    || "";
+    out.actualDepUtc    = f.departure?.actual    || "";
+    out.actualArr       = f.arrival?.actual      || "";
+    out.actualArrUtc    = f.arrival?.actual      || "";
+    out.status          = f.flight_status        || "";
     out.delayMinutes = f.departure?.delay || 0;
     out._source = "aviationstack";
     return out;
@@ -1556,8 +1591,11 @@ Fields:
   "date": "YYYY-MM-DD format",
   "departure": "HH:MM 24-hour local departure time",
   "arrival": "HH:MM 24-hour local arrival time (only if printed)",
+  "boarding": "HH:MM 24-hour local boarding time (look for 'Boarding', 'Boarding Time', 'Board')",
   "seat": "Seat number (e.g. 12A)",
   "gate": "Gate number/letter if printed",
+  "terminal": "Terminal number/letter (e.g. T1, 3, B) if printed",
+  "class": "Cabin class (Economy, Business, First, Premium Economy) if printed",
   "pnr": "Booking reference / PNR if printed",
   "passenger": "Passenger name if clearly readable"
 }
