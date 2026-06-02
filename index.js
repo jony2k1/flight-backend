@@ -204,42 +204,36 @@ app.get("/nearby-airports", async (req, res) => {
 });
 
 // ── CITY PHOTO ────────────────────────────────────────────────
+// Fully dynamic — no hardcoded list. Works for ANY airport in the world.
+// Strategy: try progressively broader queries until we get a result.
 app.get("/city-photo", async (req, res) => {
   try {
-    const { city, iata } = req.query;
-    const CITY_LANDMARKS = {
-      "RUH": "Riyadh Saudi Arabia", "JED": "Jeddah Saudi Arabia",
-      "DXB": "Dubai UAE", "AUH": "Abu Dhabi UAE",
-      "BOM": "Mumbai India", "DEL": "New Delhi India",
-      "SIN": "Singapore", "BKK": "Bangkok Thailand",
-      "KUL": "Kuala Lumpur Malaysia", "BAH": "Manama Bahrain",
-      "DOH": "Doha Qatar", "MCT": "Muscat Oman",
-      "KWI": "Kuwait City", "DAC": "Dhaka Bangladesh",
-      "LHR": "London England", "NRT": "Tokyo Japan",
-      "IST": "Istanbul Turkey", "CAI": "Cairo Egypt",
-      "DMM": "Dammam Saudi Arabia", "MED": "Medina Saudi Arabia",
-      "LKO": "Lucknow India", "MAA": "Chennai India",
-      "BLR": "Bangalore India", "HYD": "Hyderabad India",
-      "CCU": "Kolkata India", "CMB": "Colombo Sri Lanka",
-      "MLE": "Maldives", "SHJ": "Sharjah UAE",
-      "CGP": "Chittagong Bangladesh", "ISB": "Islamabad Pakistan",
-      "KHI": "Karachi Pakistan", "LHE": "Lahore Pakistan",
-      "CDG": "Paris France", "FRA": "Frankfurt Germany",
-      "JFK": "New York City", "RAH": "Rafha Saudi Arabia",
-    };
-    const searchQuery = CITY_LANDMARKS[iata] || `${city || iata} city skyline landmark`;
-    const searchRes = await axios({
-      url: "https://api.unsplash.com/search/photos",
-      params: { query: searchQuery, per_page: 10, order_by: "relevant", orientation: "landscape", content_filter: "high" },
-      headers: { Authorization: `Client-ID FDMg0AEVWycwezGaeF3qO7316GBeetnvKqHQ3Q7a22w` }
-    });
-    const results = searchRes.data?.results || [];
-    if (!results.length) return res.status(404).json({ url: null });
-    const photo = results.find(p => p.width / p.height > 1.2) || results[0];
-    const photoUrl = photo.urls?.regular || photo.urls?.full;
-    if (!photoUrl) return res.status(404).json({ url: null });
-    res.set("Cache-Control", "public, max-age=86400");
-    res.json({ url: photoUrl });
+    const { city, iata, country } = req.query;
+    const PEXELS_KEY = process.env.PEXELS_KEY;
+    if (!PEXELS_KEY) return res.status(500).json({ url: null, error: "No Pexels key" });
+
+    // Build a list of search queries from most specific → most generic
+    const queries = [];
+    if (city && country) queries.push(`${city} ${country} skyline`);
+    if (city)            queries.push(`${city} city skyline`);
+    if (city)            queries.push(`${city} landmark`);
+    if (city)            queries.push(`${city} travel`);
+    if (country)         queries.push(`${country} travel landscape`);
+
+    for (const q of queries) {
+      const pexelsRes = await axios.get(
+        `https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=5&orientation=landscape`,
+        { headers: { Authorization: PEXELS_KEY } }
+      );
+      const photos = pexelsRes.data?.photos || [];
+      if (photos.length) {
+        const url = photos[0].src?.large2x || photos[0].src?.large || photos[0].src?.original;
+        res.set("Cache-Control", "public, max-age=604800"); // cache 7 days in CDN/browser
+        return res.json({ url });
+      }
+    }
+
+    res.status(404).json({ url: null });
   } catch (error) {
     res.json({ url: null, error: error.message });
   }
