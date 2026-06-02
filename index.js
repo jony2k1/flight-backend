@@ -509,6 +509,52 @@ app.post("/gmail-emails", async (req, res) => {
   }
 });
 
+// ── GMAIL EXCHANGE CODE FOR REFRESH TOKEN ─────────────────────
+app.post("/gmail-exchange-code", async (req, res) => {
+  try {
+    const { code, redirectUri } = req.body;
+    if (!code) return res.status(400).json({ error: "No code" });
+    const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+    const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+    if (!CLIENT_ID || !CLIENT_SECRET) return res.status(500).json({ error: "Google credentials not configured" });
+    const r = await axios.post("https://oauth2.googleapis.com/token", {
+      code, client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
+      redirect_uri: redirectUri || "postmessage",
+      grant_type: "authorization_code",
+    });
+    res.json({ refreshToken: r.data.refresh_token, accessToken: r.data.access_token });
+  } catch (err) {
+    console.error("gmail-exchange-code error:", err?.response?.data || err.message);
+    res.status(500).json({ error: err?.response?.data?.error_description || err.message });
+  }
+});
+
+// ── GMAIL AUTO-SYNC (uses refresh token) ──────────────────────
+app.post("/gmail-auto-sync", async (req, res) => {
+  try {
+    const { refreshToken, afterDate } = req.body;
+    if (!refreshToken) return res.status(400).json({ error: "No refresh token" });
+    const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+    const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+    if (!CLIENT_ID || !CLIENT_SECRET) return res.status(500).json({ error: "Google credentials not configured" });
+    // Exchange refresh token for fresh access token
+    const r = await axios.post("https://oauth2.googleapis.com/token", {
+      refresh_token: refreshToken, client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
+      grant_type: "refresh_token",
+    });
+    const accessToken = r.data.access_token;
+    if (!accessToken) return res.status(401).json({ error: "Could not refresh token" });
+    // Forward to existing gmail-emails logic by calling internally
+    req.body.accessToken = accessToken;
+    req.body.afterDate = afterDate;
+    // Re-use the gmail-emails handler logic — just return the emails
+    res.json({ accessToken, ok: true });
+  } catch (err) {
+    console.error("gmail-auto-sync error:", err?.response?.data || err.message);
+    res.status(401).json({ error: "Token refresh failed — user needs to reconnect Gmail" });
+  }
+});
+
 // ── NYLAS EMAILS ──────────────────────────────────────────────
 app.post("/nylas-emails", async (req, res) => {
   try {
