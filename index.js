@@ -557,8 +557,8 @@ app.post("/trip-plan", async (req, res) => {
     const prompt = `You are an expert travel planner. Destination: ${destination}, From: ${fromCity}, Duration: ${duration}, Month: ${month}, Budget: ${budget}, Trip type: ${tripType}. Return ONLY valid JSON no markdown: {"destination":"city","country":"country","tagline":"inspiring tagline","description":"2-3 human inspiring lines","weather":"weather in ${month}","visa":"visa info for Saudi/GCC passport","currency":"local currency name and symbol only like AED, THB, GBP","language":"local language and 2 useful phrases","timezone":"UTC offset","bestTime":"is ${month} good and why","travelVibe":"Relax/Adventure/Luxury/City Life","estimatedBudget":{"flightLocal":"price range in local currency with symbol","hotelPerNight":"price per night in local currency with symbol","dailySpend":"daily spend in local currency with symbol","totalTrip":"total trip estimate in local currency with symbol"},"attractions":[{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"},{"name":"name","desc":"1 line","emoji":"emoji","type":"hidden-gem"},{"name":"name","desc":"1 line","emoji":"emoji","type":"food"},{"name":"name","desc":"1 line","emoji":"emoji","type":"activity"},{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"}],"nearbyDestinations":[{"city":"city","country":"country","emoji":"emoji","reason":"why visit"},{"city":"city","country":"country","emoji":"emoji","reason":"why"},{"city":"city","country":"country","emoji":"emoji","reason":"why"}],"hotelAreas":["area1","area2","area3"],"foodMustTry":["dish1","dish2","dish3"],"packingList":{"essential":["item1","item2","item3"],"clothing":["item1","item2","item3"],"documents":["item1","item2"]},"dayPlan":[{"day":1,"title":"Arrival","activities":["act1","act2","act3"]},{"day":2,"title":"Explore","activities":["act1","act2","act3"]},{"day":3,"title":"Hidden Gems","activities":["act1","act2","act3"]}],"tips":["tip1","tip2","tip3"],"moodTips":{"Relax":["destination specific relax tip1","tip2","tip3"],"Adventure":["destination specific adventure tip1","tip2","tip3"],"Budget":["destination specific budget tip1","tip2","tip3"],"Luxury":["destination specific luxury tip1","tip2","tip3"]}}`;
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
-      { model: "claude-haiku-4-5", max_tokens: 3000, messages: [{ role: "user", content: prompt }] },
-      { headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" } }
+      { model: "claude-haiku-4-5", max_tokens: 2048, messages: [{ role: "user", content: prompt }] },
+      { headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" }, timeout: 45000 }
     );
     const text = response.data.content[0].text;
     const clean = text.replace(/```json\n?|```\n?/g, "").trim();
@@ -567,6 +567,11 @@ app.post("/trip-plan", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── KEEP-ALIVE (prevents Render cold starts) ──────────────────
+// Render Starter spins down after 15 min idle. This endpoint lets
+// the frontend ping us before the user submits a heavy request.
+app.get("/ping", (req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ── TRAVEL DNA ────────────────────────────────────────────────
 app.post("/travel-dna", async (req, res) => {
@@ -1032,31 +1037,40 @@ app.get("/flight-info", async (req, res) => {
     }
 
     if (!flight) {
-      // ── FALLBACK WATERFALL: try ALL sources and MERGE data ──────
-      // Critical: even partial data from each source combined gives full picture
-      console.log(`AeroDataBox: no data for ${fn}, trying all fallbacks...`);
+      // ── PARALLEL FALLBACK: fire all 3 sources at once, merge results ───
+      // Previously sequential (up to 24s). Now parallel: all finish in ~8s max.
+      console.log(`AeroDataBox: no data for ${fn}, trying parallel fallbacks...`);
+
+      const [airLabsScheduleResult, avStackData, liveData] = await Promise.all([
+        // 1. AirLabs schedule — try today + tomorrow + yesterday in parallel
+        (async () => {
+          for (const d of dates) {
+            const r = await fetchAirLabsSchedule(fn, d);
+            if (r) return r;
+          }
+          return null;
+        })(),
+        // 2. AviationStack — try each date
+        (async () => {
+          for (const d of dates) {
+            const r = await fetchAviationStack(fn, d);
+            if (r) return r;
+          }
+          return null;
+        })(),
+        // 3. AirLabs live (no date needed)
+        fetchAirLabsLive(fn),
+      ]);
+
       let fallback = null;
       const sources = [];
 
-      // 1. AirLabs schedule (terminal/gate if plan supports)
-      for (const d of dates) {
-        const r = await fetchAirLabsSchedule(fn, d);
-        if (r) { fallback = r; sources.push("airlabs-schedule"); break; }
-      }
-
-      // 2. AviationStack (almost always has scheduled times) — ALWAYS try, merge
-      let avStackData = null;
-      for (const d of dates) {
-        avStackData = await fetchAviationStack(fn, d);
-        if (avStackData) { sources.push("aviationstack"); break; }
-      }
+      if (airLabsScheduleResult) { fallback = airLabsScheduleResult; sources.push("airlabs-schedule"); }
       if (avStackData) {
+        sources.push("aviationstack");
         if (!fallback) fallback = avStackData;
         else fallback = mergeMissing(fallback, avStackData);
       }
-
-      // 3. AirLabs live (real-time confirmation) — ALWAYS try, merge
-      const liveData = await fetchAirLabsLive(fn);
       if (liveData) {
         sources.push("airlabs-live");
         if (!fallback) fallback = liveData;
