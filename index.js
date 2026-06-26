@@ -269,7 +269,7 @@ app.post("/extract-flight", async (req, res) => {
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
-        model: "claude-haiku-4-5",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 1000,
         messages: [{ role: "user", content: `You extract flight booking data from airline emails. Extract ALL flights found - if email has multiple flights return a JSON array.
 
@@ -597,7 +597,7 @@ app.post("/trip-plan", async (req, res) => {
     const prompt = `You are an expert travel planner. Destination: ${destination}, From: ${fromCity}, Duration: ${duration}, Month: ${month}, Budget: ${budget}, Trip type: ${tripType}. Return ONLY valid JSON no markdown: {"destination":"city","country":"country","tagline":"inspiring tagline","description":"2-3 human inspiring lines","weather":"weather in ${month}","visa":"visa info for Saudi/GCC passport","currency":"local currency name and symbol only like AED, THB, GBP","language":"local language and 2 useful phrases","timezone":"UTC offset","bestTime":"is ${month} good and why","travelVibe":"Relax/Adventure/Luxury/City Life","estimatedBudget":{"flightLocal":"price range in local currency with symbol","hotelPerNight":"price per night in local currency with symbol","dailySpend":"daily spend in local currency with symbol","totalTrip":"total trip estimate in local currency with symbol"},"attractions":[{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"},{"name":"name","desc":"1 line","emoji":"emoji","type":"hidden-gem"},{"name":"name","desc":"1 line","emoji":"emoji","type":"food"},{"name":"name","desc":"1 line","emoji":"emoji","type":"activity"},{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"}],"nearbyDestinations":[{"city":"city","country":"country","emoji":"emoji","reason":"why visit"},{"city":"city","country":"country","emoji":"emoji","reason":"why"},{"city":"city","country":"country","emoji":"emoji","reason":"why"}],"hotelAreas":["area1","area2","area3"],"foodMustTry":["dish1","dish2","dish3"],"packingList":{"essential":["item1","item2","item3"],"clothing":["item1","item2","item3"],"documents":["item1","item2"]},"dayPlan":[{"day":1,"title":"Arrival","activities":["act1","act2","act3"]},{"day":2,"title":"Explore","activities":["act1","act2","act3"]},{"day":3,"title":"Hidden Gems","activities":["act1","act2","act3"]}],"tips":["tip1","tip2","tip3"],"moodTips":{"Relax":["destination specific relax tip1","tip2","tip3"],"Adventure":["destination specific adventure tip1","tip2","tip3"],"Budget":["destination specific budget tip1","tip2","tip3"],"Luxury":["destination specific luxury tip1","tip2","tip3"]}}`;
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
-      { model: "claude-haiku-4-5", max_tokens: 2048, messages: [{ role: "user", content: prompt }] },
+      { model: "claude-haiku-4-5-20251001", max_tokens: 2048, messages: [{ role: "user", content: prompt }] },
       { headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" }, timeout: 45000 }
     );
     const text = response.data.content[0].text;
@@ -639,7 +639,7 @@ Return ONLY valid JSON, no markdown:
 {"title":"THE GULF NOMAD","subtitle":"Short-Haul Royalty","poem":["Line 1 poetic max 8 words","Line 2 poetic max 8 words","Line 3 poetic max 8 words","Line 4 poetic max 8 words"],"traits":[{"emoji":"🕐","label":"Thursday Night Flyer","detail":"34% of flights"},{"emoji":"🛫","label":"Short Haul Addict","detail":"avg 892 km"},{"emoji":"🔁","label":"Route Loyalist","detail":"RUH↔BOM x 12"},{"emoji":"✈️","label":"Saudia Faithful","detail":"81 flights 38%"},{"emoji":"🌍","label":"Gulf Resident","detail":"68% GCC routes"}],"dnaScores":{"Loyalty":78,"Adventure":42,"Distance":18,"Frequency":91,"Explorer":35},"funFact":"One surprising funny insight in 1 sentence"}`;
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
-      { model: "claude-haiku-4-5", max_tokens: 1000, messages: [{ role: "user", content: prompt }] },
+      { model: "claude-haiku-4-5-20251001", max_tokens: 1000, messages: [{ role: "user", content: prompt }] },
       { headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" } }
     );
     const text = response.data.content[0].text;
@@ -1664,7 +1664,7 @@ Rules:
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
-        model: "claude-haiku-4-5",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 600,
         messages: [{
           role: "user",
