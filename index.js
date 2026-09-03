@@ -996,7 +996,28 @@ function fillTimeFallback(result) {
 // ── INFER STATUS: backend safety net for misreported "Unknown" ────
 function inferStatus(result) {
   if (!result) return result;
-  const lower = (result.status || "").toLowerCase();
+  let lower = (result.status || "").toLowerCase();
+
+  // ── CREDIBILITY GATE ──────────────────────────────────────────
+  // A terminal / airborne status is only believable if we ALSO have at least
+  // one real time for this flight. AirLabs' live /flight endpoint takes no date
+  // param and returns the LAST-known state of that flight number — frequently
+  // "landed" from a previous operating day — with every schedule field blank.
+  // Passing that through showed "ARRIVED" on flights that hadn't even boarded
+  // (e.g. new carriers like Riyadh Air that no date-aware source covers yet).
+  const hasAnyTime = !!(
+    result.scheduledDepUtc || result.scheduledDep ||
+    result.scheduledArrUtc || result.scheduledArr ||
+    result.actualDep || result.actualDepUtc || result.actualArr || result.actualArrUtc ||
+    result.revisedDep || result.revisedArr
+  );
+  if (!hasAnyTime && /landed|arrived|active|en.?route|airborne|departed/.test(lower)) {
+    console.log(`⚠️  Cleared unverifiable status "${result.status}" for ${result.flightNumber || "?"} (no schedule times)`);
+    result.status = "";
+    result._statusCleared = true;
+    lower = "";
+  }
+
   // Don't override clear final states
   if (lower.includes("cancelled") || lower.includes("diverted") || lower.includes("landed") || lower.includes("arrived")) {
     return result;
