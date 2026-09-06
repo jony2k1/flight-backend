@@ -1952,10 +1952,12 @@ app.post("/generate-pkpass", async (req, res) => {
           responseType: "arraybuffer", timeout: 6000,
         });
         const asrc = Buffer.from(alr.data);
+        // ~17% smaller than the 50pt slot height — the raw airline square
+        // otherwise reads a touch too large next to the airline name.
         const box = (n) => sharp(asrc).resize(n, n, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
-        icons["logo.png"]    = await box(50);
-        icons["logo@2x.png"] = await box(100);
-        icons["logo@3x.png"] = await box(150);
+        icons["logo.png"]    = await box(42);
+        icons["logo@2x.png"] = await box(84);
+        icons["logo@3x.png"] = await box(126);
       } catch (e) {
         console.warn("[pkpass] airline logo fetch failed, keeping Flownto mark:", e?.message);
       }
