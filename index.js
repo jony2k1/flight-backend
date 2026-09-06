@@ -1726,29 +1726,40 @@ Rules:
 let _passIconCache = null;
 async function loadPassIcons() {
   if (_passIconCache) return _passIconCache;
+
+  // Gold ring + swept plane mark — pure SVG shapes (no fonts, so librsvg on
+  // Render renders it reliably). Reads well on the navy pass background.
+  const markSvg = (w, h) => Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 120 120">
+       <circle cx="60" cy="60" r="52" fill="none" stroke="#d4a74a" stroke-width="7"/>
+       <circle cx="60" cy="60" r="34" fill="none" stroke="#d4a74a" stroke-width="3.5" opacity="0.35"/>
+       <path d="M30 66 L88 40 C94 37 97 45 92 49 L46 77 L31 79 L35 69 Z" fill="#d4a74a"/>
+     </svg>`
+  );
+  const png = (svg) => sharp(svg).png().toBuffer();
+  const tp = { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } };
+
   try {
-    const r = await axios.get("https://www.flownto.app/logo.png", {
-      responseType: "arraybuffer", timeout: 8000,
-    });
-    const src = Buffer.from(r.data);
     _passIconCache = {
-      "icon.png":    await sharp(src).resize(29, 29, { fit: "contain", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
-      "icon@2x.png": await sharp(src).resize(58, 58, { fit: "contain", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
-      "icon@3x.png": await sharp(src).resize(87, 87, { fit: "contain", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
-      "logo.png":    await sharp(src).resize(160, 50, { fit: "inside", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
-      "logo@2x.png": await sharp(src).resize(320, 100, { fit: "inside", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
-      "logo@3x.png": await sharp(src).resize(480, 150, { fit: "inside", background: { r:8,g:8,b:10,alpha:0 } }).png().toBuffer(),
+      // icon.* — square app mark (shown in notifications / Wallet list)
+      "icon.png":    await png(await sharp(markSvg(29, 29)).resize(29, 29, tp).toBuffer()),
+      "icon@2x.png": await png(await sharp(markSvg(58, 58)).resize(58, 58, tp).toBuffer()),
+      "icon@3x.png": await png(await sharp(markSvg(87, 87)).resize(87, 87, tp).toBuffer()),
+      // logo.* — top-left of the pass; keep it a compact square mark
+      "logo.png":    await png(await sharp(markSvg(50, 50)).resize(50, 50, tp).toBuffer()),
+      "logo@2x.png": await png(await sharp(markSvg(100, 100)).resize(100, 100, tp).toBuffer()),
+      "logo@3x.png": await png(await sharp(markSvg(150, 150)).resize(150, 150, tp).toBuffer()),
     };
   } catch (e) {
-    // Fallback — solid gold square if remote fetch fails
+    console.error("[pkpass] icon render failed, using gold square:", e?.message);
     const gold = await sharp({
-      create: { width: 87, height: 87, channels: 4, background: { r:201,g:168,b:76, alpha:1 } }
+      create: { width: 87, height: 87, channels: 4, background: { r: 212, g: 167, b: 74, alpha: 1 } }
     }).png().toBuffer();
     _passIconCache = {
-      "icon.png":    await sharp(gold).resize(29, 29).png().toBuffer(),
+      "icon.png": await sharp(gold).resize(29, 29).png().toBuffer(),
       "icon@2x.png": await sharp(gold).resize(58, 58).png().toBuffer(),
       "icon@3x.png": gold,
-      "logo.png":    await sharp(gold).resize(50, 50).png().toBuffer(),
+      "logo.png": await sharp(gold).resize(50, 50).png().toBuffer(),
       "logo@2x.png": await sharp(gold).resize(100, 100).png().toBuffer(),
       "logo@3x.png": await sharp(gold).resize(150, 150).png().toBuffer(),
     };
@@ -1836,6 +1847,22 @@ app.post("/generate-pkpass", async (req, res) => {
       const str = String(v).trim();
       return str === "" || str === "null" || str === "undefined" ? fallback : str;
     };
+    // True only when a value carries real data (not the "—" placeholder).
+    const has = (v) => {
+      if (v === null || v === undefined) return false;
+      const str = String(v).trim().toLowerCase();
+      return str !== "" && str !== "—" && str !== "n/a" && str !== "null" && str !== "undefined" && str !== "tba";
+    };
+    // Build a field object, or null to drop it — a Wallet pass looks premium
+    // when it shows only the data it actually has, not rows of "—".
+    const fld = (key, label, value, extra = {}) => has(value) ? { key, label, value: String(value).trim(), ...extra } : null;
+
+    const flightNo   = s(flight.flightNumber, "");
+    const airlineIata = String(flight.flightNumber || "").replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase();
+    const flightNum   = parseInt(String(flight.flightNumber || "").replace(/\D/g, ""), 10);
+    const relevantDate = flight.date
+      ? `${flight.date}T${(has(flight.departure) ? String(flight.departure).trim() : "12:00")}:00Z`
+      : null;
 
     // Build pass.json — every value forced to a clean string
     const passData = {
@@ -1846,34 +1873,52 @@ app.post("/generate-pkpass", async (req, res) => {
       organizationName: "Flownto",
       description: "Boarding Pass",
       logoText: s(flight.airline, "Flownto"),
-      // Cream + black theme matching the in-app boarding pass
-      backgroundColor: "rgb(251, 248, 238)",  // cream
-      foregroundColor: "rgb(26, 20, 8)",       // dark text
-      labelColor: "rgb(138, 125, 94)",         // muted gold for labels
+      // Navy + gold theme matching the in-app frosted-glass boarding pass.
+      // Apple requires rgb() strings here — hex values are rejected and the pass
+      // falls back to the default white template.
+      backgroundColor: "rgb(5, 13, 26)",       // #050d1a — app navy
+      foregroundColor: "rgb(255, 255, 255)",   // white values
+      labelColor: "rgb(212, 167, 74)",         // #d4a74a — app gold for labels
+      ...(relevantDate ? { relevantDate } : {}),
       boardingPass: {
         transitType: "PKTransitTypeAir",
-        // Primary fields show as the giant route at top of pass
+        // Header — small, top-right next to the logo
+        headerFields: [
+          fld("flight", "FLIGHT", flightNo || null),
+        ].filter(Boolean),
+        // Primary — the giant FROM → ✈ → TO row
         primaryFields: [
           { key: "from", label: s(flight.fromCity, s(flight.from, "FROM")), value: s(flight.from, "—") },
           { key: "to",   label: s(flight.toCity,   s(flight.to,   "TO")),   value: s(flight.to,   "—") }
         ],
+        // Secondary — always-present essentials
         secondaryFields: [
-          { key: "passenger", label: "PASSENGER", value: s(passenger ? String(passenger).toUpperCase() : null, "—") },
-          { key: "flight",    label: "FLIGHT",    value: s(flight.flightNumber) },
-          { key: "date",      label: "DATE",      value: s(dateStr) }
-        ],
+          fld("passenger", "PASSENGER", passenger ? String(passenger).toUpperCase() : null),
+          fld("date",      "DATE",      dateStr),
+        ].filter(Boolean),
+        // Auxiliary — only what we actually know (no "—" rows)
         auxiliaryFields: [
-          { key: "gate",     label: "GATE",     value: s(flight.gate) },
-          { key: "seat",     label: "SEAT",     value: s(flight.seat) },
-          { key: "boarding", label: "BOARDING", value: s(flight.boarding, s(flight.departure)) }
-        ],
+          fld("gate",     "GATE",     flight.gate),
+          fld("seat",     "SEAT",     flight.seat),
+          fld("boarding", "BOARDING", has(flight.boarding) ? flight.boarding : flight.departure),
+        ].filter(Boolean),
         backFields: [
-          { key: "bookingref", label: "Booking Reference", value: s(flight.pnr, s(flight.bookingRef)) },
-          { key: "terminal",   label: "Terminal",          value: s(flight.terminal) },
-          { key: "arrival",    label: "Arrival Time",      value: s(flight.arrival) },
-          { key: "airline",    label: "Airline",           value: s(flight.airline) },
-          { key: "note",       label: "Generated by",      value: "Flownto · flownto.app" }
-        ]
+          fld("bookingref", "Booking Reference", has(flight.pnr) ? flight.pnr : flight.bookingRef),
+          fld("terminal",   "Terminal",          flight.terminal),
+          fld("arrival",    "Arrival Time",      flight.arrival),
+          fld("airline",    "Airline",           flight.airline),
+          { key: "note", label: "Generated by", value: "Flownto · flownto.app" },
+        ].filter(Boolean)
+      },
+      // Flight semantics — unlocks Wallet's flight-aware UI ("Time to leave",
+      // live gate, airport info) when the codes are present.
+      semantics: {
+        ...(airlineIata ? { airlineCode: `${airlineIata}${Number.isFinite(flightNum) ? " " + flightNum : ""}` } : {}),
+        ...(Number.isFinite(flightNum) ? { flightNumber: flightNum } : {}),
+        ...(has(flight.from) ? { departureAirportCode: String(flight.from).trim().toUpperCase() } : {}),
+        ...(has(flight.to)   ? { arrivalAirportCode:   String(flight.to).trim().toUpperCase() } : {}),
+        ...(relevantDate ? { originalDepartureDate: relevantDate } : {}),
+        ...(has(flight.airline) ? { transitProvider: String(flight.airline).trim() } : {}),
       },
       barcodes: [{
         format: "PKBarcodeFormatQR",
