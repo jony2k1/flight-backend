@@ -1876,7 +1876,7 @@ app.post("/generate-pkpass", async (req, res) => {
       // Navy + gold theme matching the in-app frosted-glass boarding pass.
       // Apple requires rgb() strings here — hex values are rejected and the pass
       // falls back to the default white template.
-      backgroundColor: "rgb(5, 13, 26)",       // #050d1a — app navy
+      backgroundColor: "rgb(10, 20, 36)",      // #0a1424 — mid-tone of the app's navy glass card
       foregroundColor: "rgb(255, 255, 255)",   // white values
       labelColor: "rgb(212, 167, 74)",         // #d4a74a — app gold for labels
       ...(relevantDate ? { relevantDate } : {}),
@@ -1933,7 +1933,34 @@ app.post("/generate-pkpass", async (req, res) => {
     console.log("[pkpass] Generated pass.json preview:",
       JSON.stringify({ ...passData, boardingPass: undefined, barcodes: undefined }));
 
-    const icons = await loadPassIcons();
+    const icons = { ...(await loadPassIcons()) };
+
+    // Use the real airline logo top-left (matches the in-app boarding pass).
+    // Same source the app uses. Falls back to the Flownto gold mark on miss.
+    const AIRLINE_NAME_TO_IATA = {
+      "saudia":"SV","saudi arabian airlines":"SV","indigo":"6E","emirates":"EK","etihad":"EY",
+      "etihad airways":"EY","gulf air":"GF","air arabia":"G9","jazeera airways":"J9","kuwait airways":"KU",
+      "oman air":"WY","flynas":"XY","flyadeal":"F3","flydubai":"FZ","air india":"AI","qatar airways":"QR",
+      "turkish airlines":"TK","british airways":"BA","lufthansa":"LH","klm":"KL","air france":"AF",
+      "singapore airlines":"SQ","cathay pacific":"CX","qantas":"QF","american airlines":"AA",
+      "delta":"DL","delta air lines":"DL","united":"UA","united airlines":"UA",
+    };
+    const logoCode = airlineIata || AIRLINE_NAME_TO_IATA[String(flight.airline || "").trim().toLowerCase()] || "";
+    if (logoCode) {
+      try {
+        const alr = await axios.get(`https://images.kiwi.com/airlines/64x64/${logoCode}.png`, {
+          responseType: "arraybuffer", timeout: 6000,
+        });
+        const asrc = Buffer.from(alr.data);
+        const box = (n) => sharp(asrc).resize(n, n, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
+        icons["logo.png"]    = await box(50);
+        icons["logo@2x.png"] = await box(100);
+        icons["logo@3x.png"] = await box(150);
+      } catch (e) {
+        console.warn("[pkpass] airline logo fetch failed, keeping Flownto mark:", e?.message);
+      }
+    }
+
     const passBuffers = {
       "pass.json": Buffer.from(JSON.stringify(passData)),
       ...icons,
