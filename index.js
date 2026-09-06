@@ -1952,12 +1952,21 @@ app.post("/generate-pkpass", async (req, res) => {
           responseType: "arraybuffer", timeout: 6000,
         });
         const asrc = Buffer.from(alr.data);
-        // ~17% smaller than the 50pt slot height — the raw airline square
-        // otherwise reads a touch too large next to the airline name.
-        const box = (n) => sharp(asrc).resize(n, n, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
-        icons["logo.png"]    = await box(42);
-        icons["logo@2x.png"] = await box(84);
-        icons["logo@3x.png"] = await box(126);
+        // Apple scales logo.png to the slot HEIGHT regardless of pixel size, so
+        // shrinking the image does nothing — instead keep a full-size canvas and
+        // pad the mark to ~78% so it renders visually smaller next to the name.
+        const clear = { r: 0, g: 0, b: 0, alpha: 0 };
+        const box = async (n) => {
+          const inner = Math.round(n * 0.78);
+          const m = Math.round((n - inner) / 2);
+          return sharp(asrc)
+            .resize(inner, inner, { fit: "contain", background: clear })
+            .extend({ top: m, bottom: n - inner - m, left: m, right: n - inner - m, background: clear })
+            .png().toBuffer();
+        };
+        icons["logo.png"]    = await box(50);
+        icons["logo@2x.png"] = await box(100);
+        icons["logo@3x.png"] = await box(150);
       } catch (e) {
         console.warn("[pkpass] airline logo fetch failed, keeping Flownto mark:", e?.message);
       }
