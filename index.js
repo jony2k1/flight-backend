@@ -2004,6 +2004,80 @@ app.post("/generate-pkpass", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AVIATION NEWS — merged, de-duped, low-volume feed for the in-app news bell.
+// Pulls a couple of standard RSS feeds, strips them to {title, summary, url,
+// source, date}, caches for 30 min. The app only surfaces the top few and
+// notifies at most once a day, so the raw feed volume doesn't matter.
+// ─────────────────────────────────────────────────────────────────────────────
+const crypto = require("crypto");
+
+const NEWS_FEEDS = [
+  { url: "https://simpleflying.com/feed/",   source: "Simple Flying" },
+  { url: "https://onemileatatime.com/feed/", source: "One Mile at a Time" },
+];
+
+let _newsCache = { at: 0, items: [] };
+
+const _entities = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&#8217;": "’", "&#8216;": "‘", "&#8220;": "“", "&#8221;": "”", "&#8211;": "–", "&#8212;": "—", "&nbsp;": " " };
+const decodeEntities = (s) => String(s || "").replace(/&#?\w+;/g, (m) => _entities[m] || m);
+const stripHtml = (s) => decodeEntities(String(s || "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+
+function parseRss(xml, source) {
+  const out = [];
+  const blocks = String(xml).split(/<item[ >]/).slice(1);
+  for (const b of blocks) {
+    const pick = (tag) => {
+      const m = b.match(new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`));
+      return m ? m[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim() : "";
+    };
+    const title = stripHtml(pick("title"));
+    const link  = stripHtml(pick("link")) || (b.match(/<link[^>]*href="([^"]+)"/) || [])[1] || "";
+    const desc  = stripHtml(pick("description")).slice(0, 260);
+    const pub   = pick("pubDate") || pick("dc:date") || pick("published");
+    const date  = pub ? new Date(pub) : null;
+    if (title && link) {
+      out.push({
+        id: crypto.createHash("sha1").update(link).digest("hex").slice(0, 12),
+        title, summary: desc, url: link, source,
+        date: date && !isNaN(date) ? date.toISOString() : new Date().toISOString(),
+      });
+    }
+  }
+  return out;
+}
+
+async function loadNews() {
+  if (Date.now() - _newsCache.at < 30 * 60 * 1000 && _newsCache.items.length) return _newsCache.items;
+  const all = [];
+  await Promise.all(NEWS_FEEDS.map(async (f) => {
+    try {
+      const r = await axios.get(f.url, { timeout: 10000, headers: { "User-Agent": "FlowntoNews/1.0" } });
+      all.push(...parseRss(r.data, f.source));
+    } catch (e) {
+      console.warn("[news] feed failed:", f.source, e?.message);
+    }
+  }));
+  const seen = new Set();
+  const items = all
+    .filter((it) => (seen.has(it.id) ? false : seen.add(it.id)))
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .slice(0, 10);
+  if (items.length) _newsCache = { at: Date.now(), items };
+  return _newsCache.items;
+}
+
+app.get("/news", async (req, res) => {
+  try {
+    const items = await loadNews();
+    res.set("Cache-Control", "public, max-age=900");
+    res.json({ items, latestId: items[0]?.id || null, count: items.length });
+  } catch (err) {
+    console.error("[news] error:", err?.message);
+    res.status(500).json({ items: [], latestId: null, error: "news unavailable" });
+  }
+});
+
 // ── START SERVER ──────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`✈️ Server running on http://localhost:${PORT}`);
