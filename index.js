@@ -968,8 +968,26 @@ async function enrichLivePosition(result) {
   if (!cs && !result.aircraftIcao24) return result;
   const live = await fetchOpenSkyPosition(cs, result.aircraftIcao24);
   if (live) {
-    Object.assign(result, live);
-    result._source = (result._source ? result._source + "+" : "") + "opensky";
+    // Only trust OpenSky telemetry when it describes an aircraft that is
+    // actually flying RIGHT NOW. A reused callsign frequently matches a plane
+    // that has already parked (on_ground, speed ~0) or a stale state vector
+    // from hours ago — both produced nonsense like "0 KM/H · 1,486 FT" over a
+    // live flight. Reject those; the app falls back to its flight-profile sim.
+    const ageSec = live.liveLastContact != null
+      ? Math.floor(Date.now() / 1000) - live.liveLastContact
+      : null;
+    const fresh = ageSec == null || ageSec <= 15 * 60;
+    const airborne = !live.liveOnGround
+      && !(live.liveSpeedKph != null && live.liveSpeedKph < 60)
+      && !(live.liveAltFt != null && live.liveAltFt < 1000);
+    const hasPos = live.liveLat != null && live.liveLng != null;
+    if (fresh && airborne && hasPos) {
+      Object.assign(result, live);
+      result.liveAgeSec = ageSec;
+      result._source = (result._source ? result._source + "+" : "") + "opensky";
+    } else {
+      result._openskyRejected = { ageSec, onGround: !!live.liveOnGround, speedKph: live.liveSpeedKph, altFt: live.liveAltFt };
+    }
   }
   return result;
 }
