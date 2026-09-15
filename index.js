@@ -1079,13 +1079,26 @@ app.get("/flight-info", async (req, res) => {
     // v3 = added fromLat/fromLng/toLat/toLng for OfflineTracker
     const cacheKey = date ? `v3-${fn}-${date}` : `v3-${fn}`;
 
-    if (flightCache[cacheKey] && (Date.now() - flightCache[cacheKey].ts) < 3600000 && flightCache[cacheKey].data.status !== "Arrived") {
+    if (flightCache[cacheKey]) {
+      const cached = flightCache[cacheKey].data;
       // Re-run status inference on cached data so a flight cached as "Active"/"En Route"
       // automatically becomes "Arrived" once enough time has passed since arrival,
       // without burning another API call.
-      const cached = flightCache[cacheKey].data;
       inferStatus(cached);
-      return res.json(cached);
+      const fresh = (Date.now() - flightCache[cacheKey].ts) < 3600000;
+      // Once a flight is confirmed Arrived, keep serving it forever instead of
+      // re-querying: a landed flight's outcome can't change, but re-querying can
+      // still get corrupted. AeroDataBox is date-pinned and reliable, but if it
+      // misses/rate-limits on a later poll for that same historical date, we fall
+      // through to fallback sources that aren't scoped to the date (AirLabs
+      // /flight has no date param — see credibility gate below — and
+      // AviationStack's free tier doesn't reliably honor historical flight_date
+      // on its real-time endpoint). Those can silently hand back a different
+      // occurrence of the same flight number, flipping a correctly "Landed"
+      // flight back to an upcoming "Departs" with a bogus later time.
+      if (cached.status === "Arrived" || fresh) {
+        return res.json(cached);
+      }
     }
 
     const dates = date ? [date] : [
