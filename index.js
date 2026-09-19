@@ -796,6 +796,7 @@ async function fetchAirLabsLive(fn) {
 async function fetchAviationStack(fn, date) {
   const key = process.env.AVIATIONSTACK_KEY || API_KEY;
   if (!key) return null;
+  if (isRateLimited("aviationstack")) return null;
   try {
     let url = `http://api.aviationstack.com/v1/flights?access_key=${key}&flight_iata=${fn}&limit=1`;
     if (date) url += `&flight_date=${date}`;
@@ -839,6 +840,8 @@ async function fetchAviationStack(fn, date) {
     out._source = "aviationstack";
     return out;
   } catch (e) {
+    const status = e.response?.status;
+    if (status === 429) markRateLimited("aviationstack", 1);
     console.log("AviationStack error:", e.message);
     return null;
   }
@@ -1117,7 +1120,11 @@ app.get("/flight-info", async (req, res) => {
           { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
         );
         if (Array.isArray(r.data) && r.data.length > 0) {
-          flight = r.data[0];
+          // AeroDataBox returns every leg touching this local date, so an overnight
+          // flight lists last night's already-landed leg first. Prefer the leg whose
+          // scheduled departure date matches the date the user saved.
+          const depDate = (f) => String(f?.departure?.scheduledTime?.local || f?.departure?.revisedTime?.local || "").slice(0, 10);
+          flight = r.data.find(f => depDate(f) === d) || r.data[0];
           // First successful match wins — was previously requiring aircraft.reg
           // which made us fall through today's pre-departure data and return
           // yesterday's already-arrived flight, so live flights showed "Arrived".
