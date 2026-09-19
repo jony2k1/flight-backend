@@ -1015,8 +1015,39 @@ function fillTimeFallback(result) {
 }
 
 // ── INFER STATUS: backend safety net for misreported "Unknown" ────
+// "2026-09-20 18:05+10:00" + 65 min → "2026-09-20 19:10+10:00" (keeps the offset).
+function shiftIsoStr(str, mins) {
+  const m = String(str || "").match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(Z|[+-]\d{2}:\d{2})$/);
+  if (!m) return str;
+  const off = m[4];
+  const t = Date.parse(`${m[1]}T${m[2]}:${m[3]}:00${off}`);
+  if (isNaN(t)) return str;
+  let offMin = 0;
+  if (off !== "Z") offMin = (off[0] === "-" ? -1 : 1) * (parseInt(off.slice(1, 3), 10) * 60 + parseInt(off.slice(4, 6), 10));
+  const d = new Date(t + mins * 60000 + offMin * 60000);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}${off}`;
+}
+
+// AeroDataBox often revises the DEPARTURE for a delay but leaves the arrival
+// prediction equal to the schedule. A flight that leaves 65 min late doesn't
+// land on time, so carry the departure delay onto the arrival estimate until the
+// source publishes a real one. (Google/Cirium usually recovers a little en route,
+// so this is a slightly conservative estimate, not a promise.)
+function carryDelayToArrival(result) {
+  if (!result || result._arrShifted) return;
+  const delay = Number(result.delayMinutes) || 0;
+  if (delay < 10 || result.actualArr || result.actualArrUtc || !result.scheduledArr) return;
+  const noRealEstimate = !result.revisedArr || result.revisedArr === result.scheduledArr;
+  if (!noRealEstimate) return;
+  result.revisedArr = shiftIsoStr(result.scheduledArr, delay);
+  if (result.scheduledArrUtc) result.revisedArrUtc = shiftIsoStr(result.scheduledArrUtc, delay);
+  result._arrShifted = true;
+}
+
 function inferStatus(result) {
   if (!result) return result;
+  carryDelayToArrival(result);
   let lower = (result.status || "").toLowerCase();
 
   // ── CREDIBILITY GATE ──────────────────────────────────────────
