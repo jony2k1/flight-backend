@@ -20,9 +20,19 @@ const TOKEN_RE = /^[0-9a-fA-F]{64,200}$/;
 const FN_RE = /^[A-Z0-9]{2}\d{1,4}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// A .p8 pasted into a web form often loses its line breaks (they become spaces) or
+// arrives as literal "\n". Rebuild a valid PEM from the base64 body either way.
+function normalizeKey(raw) {
+  const k = String(raw || "").replace(/\\n/g, "\n").trim();
+  const m = k.match(/-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/);
+  if (!m) return k;
+  const body = m[2].replace(/\s+/g, "");
+  return `-----BEGIN ${m[1]}-----\n${(body.match(/.{1,64}/g) || []).join("\n")}\n-----END ${m[1]}-----\n`;
+}
+
 function createPush(opts = {}) {
   const cfg = {
-    key: (opts.key ?? process.env.APNS_KEY ?? "").replace(/\\n/g, "\n"),
+    key: normalizeKey(opts.key ?? process.env.APNS_KEY ?? ""),
     keyId: opts.keyId ?? process.env.APNS_KEY_ID ?? "",
     teamId: opts.teamId ?? process.env.APNS_TEAM_ID ?? process.env.MAPKIT_TEAM_ID ?? "",
     bundleId: opts.bundleId ?? process.env.APNS_BUNDLE_ID ?? "com.flownto.app",
@@ -81,9 +91,14 @@ function createPush(opts = {}) {
   async function apnsSend(token, title, body, data = {}) {
     if (!enabled) { console.log(`[push] (APNs not configured) would send: ${title} — ${body}`); return { ok: true, skipped: true }; }
     const payload = { aps: { alert: { title, body }, sound: "default" }, ...data };
-    let r = await apnsOnce(token, payload, "production");
-    if (!r.ok && r.reason === "BadDeviceToken") r = await apnsOnce(token, payload, "sandbox");
-    return r;
+    try {
+      let r = await apnsOnce(token, payload, "production");
+      if (!r.ok && r.reason === "BadDeviceToken") r = await apnsOnce(token, payload, "sandbox");
+      return r;
+    } catch (e) {
+      // e.g. the key can't be parsed — report it instead of crashing the request
+      return { ok: false, status: 0, reason: `key/signing error: ${String(e.message || e).slice(0, 120)}` };
+    }
   }
 
   // ── Registration ────────────────────────────────────────────────────────
@@ -199,4 +214,4 @@ function createPush(opts = {}) {
   return { register, pollOnce, start, diff, enabled, sendTest, _watches: () => watches, _send: send };
 }
 
-module.exports = { createPush };
+module.exports = { createPush, normalizeKey };
