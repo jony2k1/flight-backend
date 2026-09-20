@@ -1119,7 +1119,10 @@ app.get("/flight-info", async (req, res) => {
       // automatically becomes "Arrived" once enough time has passed since arrival,
       // without burning another API call.
       inferStatus(cached);
-      const fresh = (Date.now() - flightCache[cacheKey].ts) < 3600000;
+      // Alerts poll with ?maxAge=<sec> (5 min close to departure) so delay/gate changes
+      // aren't hidden behind the default 1h cache. Clamped to 60s–1h.
+      const maxAgeMs = Math.min(3600, Math.max(60, Number(req.query.maxAge) || 3600)) * 1000;
+      const fresh = (Date.now() - flightCache[cacheKey].ts) < maxAgeMs;
       // Once a flight is confirmed Arrived, keep serving it forever instead of
       // re-querying: a landed flight's outcome can't change, but re-querying can
       // still get corrupted. AeroDataBox is date-pinned and reliable, but if it
@@ -2148,6 +2151,18 @@ app.get("/news", async (req, res) => {
 });
 
 // ── START SERVER ──────────────────────────────────────────────
+// ── Flight alerts (APNs) — see push.js ──
+const { createPush } = require("./push");
+const push = createPush({
+  fetchFlight: async (fn, date, maxAge) =>
+    (await axios.get(`http://127.0.0.1:${PORT}/flight-info`, { params: { flightNumber: fn, date, maxAge }, timeout: 60000 })).data,
+});
+app.post("/watch", (req, res) => {
+  const r = push.register(req.body?.token, req.body?.flights);
+  res.status(r.error ? 400 : 200).json(r);
+});
+
 app.listen(PORT, () => {
+  push.start();
   console.log(`✈️ Server running on http://localhost:${PORT}`);
 });
