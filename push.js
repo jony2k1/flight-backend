@@ -185,7 +185,18 @@ function createPush(opts = {}) {
     timer = setInterval(() => pollOnce().catch(() => {}), everyMs);
   }
 
-  return { register, pollOnce, start, diff, enabled, _watches: () => watches, _send: send };
+  // One-off self-test: send an alert to a single device token (rate-limited). Returns
+  // Apple's own response so setup problems (bad key, wrong topic…) are visible.
+  const lastTest = new Map();
+  async function sendTest(token) {
+    if (!TOKEN_RE.test(String(token || ""))) return { ok: false, reason: "bad token" };
+    if (now() - (lastTest.get(token) || 0) < 30000) return { ok: false, reason: "wait 30s between tests" };
+    lastTest.set(token, now());
+    if (!enabled) return { ok: false, reason: "APNs not configured on the server" };
+    return send(token, "✈️ Flownto test alert", "Closed-app alerts are working.", { page: "dashboard" });
+  }
+
+  return { register, pollOnce, start, diff, enabled, sendTest, _watches: () => watches, _send: send };
 }
 
 module.exports = { createPush };

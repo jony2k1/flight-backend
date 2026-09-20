@@ -2163,6 +2163,10 @@ app.post("/watch", (req, res) => {
 });
 
 // Non-secret status so setup can be verified without reading Render logs.
+app.post("/push/test", async (req, res) => {
+  const r = await push.sendTest(req.body?.token);
+  res.status(r.ok ? 200 : 400).json({ ok: !!r.ok, status: r.status, reason: r.reason });
+});
 app.get("/push/status", (req, res) => res.json({ apnsConfigured: push.enabled, watches: push._watches().size }));
 
 app.listen(PORT, () => {
