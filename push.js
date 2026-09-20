@@ -25,7 +25,13 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 function normalizeKey(raw) {
   const k = String(raw || "").replace(/\\n/g, "\n").trim();
   const m = k.match(/-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/);
-  if (!m) return k;
+  if (!m) {
+    // No BEGIN/END lines (only the base64 body was pasted) — wrap it as a PKCS#8 key.
+    const bare = k.replace(/[\s"']+/g, "");
+    if (/^[A-Za-z0-9+/=]{100,}$/.test(bare))
+      return `-----BEGIN PRIVATE KEY-----\n${(bare.match(/.{1,64}/g) || []).join("\n")}\n-----END PRIVATE KEY-----\n`;
+    return k;
+  }
   const body = m[2].replace(/\s+/g, "");
   return `-----BEGIN ${m[1]}-----\n${(body.match(/.{1,64}/g) || []).join("\n")}\n-----END ${m[1]}-----\n`;
 }
@@ -211,7 +217,20 @@ function createPush(opts = {}) {
     return send(token, "✈️ Flownto test alert", "Closed-app alerts are working.", { page: "dashboard" });
   }
 
-  return { register, pollOnce, start, diff, enabled, sendTest, _watches: () => watches, _send: send };
+  // Shape only (never the key): lets setup be debugged without exposing the secret.
+  function keyInfo() {
+    const raw = String(process.env.APNS_KEY || "");
+    const m = raw.match(/-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/);
+    let parses = false;
+    try { require("crypto").createPrivateKey(cfg.key); parses = true; } catch {}
+    return {
+      rawLength: raw.length, hasBegin: /-----BEGIN/.test(raw), hasEnd: /-----END/.test(raw),
+      type: m ? m[1] : null, bodyChars: m ? m[2].replace(/\s+/g, "").length : null,
+      parses, keyIdLength: cfg.keyId.length, teamIdLength: cfg.teamId.length,
+    };
+  }
+
+  return { register, pollOnce, start, diff, enabled, sendTest, keyInfo, _watches: () => watches, _send: send };
 }
 
 module.exports = { createPush, normalizeKey };

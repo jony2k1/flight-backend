@@ -2167,7 +2167,7 @@ app.post("/push/test", async (req, res) => {
   const r = await push.sendTest(req.body?.token);
   res.status(r.ok ? 200 : 400).json({ ok: !!r.ok, status: r.status, reason: r.reason });
 });
-app.get("/push/status", (req, res) => res.json({ apnsConfigured: push.enabled, watches: push._watches().size }));
+app.get("/push/status", (req, res) => res.json({ apnsConfigured: push.enabled, watches: push._watches().size, key: push.keyInfo() }));
 
 app.listen(PORT, () => {
   push.start();
