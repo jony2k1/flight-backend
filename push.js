@@ -99,7 +99,8 @@ function createPush(opts = {}) {
     const payload = { aps: { alert: { title, body }, sound: "default" }, ...data };
     try {
       let r = await apnsOnce(token, payload, "production");
-      if (!r.ok && r.reason === "BadDeviceToken") r = await apnsOnce(token, payload, "sandbox");
+      r.env = "production";
+      if (!r.ok && r.reason === "BadDeviceToken") { r = await apnsOnce(token, payload, "sandbox"); r.env = "sandbox"; }
       return r;
     } catch (e) {
       // e.g. the key can't be parsed — report it instead of crashing the request
