@@ -2162,6 +2162,9 @@ app.post("/watch", (req, res) => {
   res.status(r.error ? 400 : 200).json(r);
 });
 
+// Non-secret status so setup can be verified without reading Render logs.
+app.get("/push/status", (req, res) => res.json({ apnsConfigured: push.enabled, watches: push._watches().size }));
+
 app.listen(PORT, () => {
   push.start();
   console.log(`✈️ Server running on http://localhost:${PORT}`);
