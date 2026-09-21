@@ -9,7 +9,8 @@
 //   APNS_KEY_ID   the 10-char Key ID
 //   APNS_TEAM_ID  Apple Team ID (falls back to MAPKIT_TEAM_ID — same team)
 //   APNS_BUNDLE_ID (optional, default com.flownto.app)
-// Without APNS_KEY the module still tracks watches but only logs what it would send.
+//   FCM_SERVICE_ACCOUNT  (Android) the Firebase service-account JSON (raw, or base64 of it)
+// Without keys the module still tracks watches but only logs what it would send.
 const fs = require("fs");
 const http2 = require("http2");
 const path = require("path");
@@ -19,6 +20,33 @@ const HOSTS = { production: "api.push.apple.com", sandbox: "api.sandbox.push.app
 const TOKEN_RE = /^[0-9a-fA-F]{64,200}$/;
 const FN_RE = /^[A-Z0-9]{2}\d{1,4}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Android (Firebase) registration tokens look like "<id>:APA91b…" — never plain hex.
+const FCM_RE = /^[A-Za-z0-9_-]{8,}:[A-Za-z0-9_-]{40,}$/;
+function tokenKind(t) {
+  const s = String(t || "");
+  if (TOKEN_RE.test(s)) return "apns";
+  if (FCM_RE.test(s)) return "fcm";
+  return null;
+}
+
+// The Firebase key arrives via an env var and often gets mangled when pasted (real newlines
+// inside the private key, or the whole file base64'd). Accept JSON, base64 JSON, or a
+// paste with raw newlines; pull out the three fields we need.
+function parseServiceAccount(raw) {
+  if (!raw) return null;
+  let t = String(raw).trim();
+  if (!t.startsWith("{") && !t.includes('"private_key"')) {
+    try { t = Buffer.from(t, "base64").toString("utf8"); } catch { return null; }
+  }
+  let o = null;
+  try { o = JSON.parse(t); } catch {
+    const g = (k) => (t.match(new RegExp(`"${k}"\\s*:\\s*"([\\s\\S]*?)"\\s*[,}]`)) || [])[1];
+    o = { project_id: g("project_id"), client_email: g("client_email"), private_key: g("private_key") };
+  }
+  if (!o || !o.project_id || !o.client_email || !o.private_key) return null;
+  o.private_key = String(o.private_key).replace(/\\n/g, "\n");
+  return o;
+}
 
 // A .p8 pasted into a web form often loses its line breaks (they become spaces) or
 // arrives as literal "\n". Rebuild a valid PEM from the base64 body either way.
@@ -46,8 +74,13 @@ function createPush(opts = {}) {
   const file = opts.file ?? path.join(process.env.DATA_DIR || __dirname, "watches.json");
   const now = opts.now ?? (() => Date.now());
   const fetchFlight = opts.fetchFlight; // async (fn, date, maxAgeSec) => flight-info payload
-  const send = opts.send ?? apnsSend;
+  // One entry point: pick the sender from the token's format.
+  const send = opts.send ?? ((token, title, body, data) =>
+    tokenKind(token) === "fcm" ? fcmSend(token, title, body, data) : apnsSend(token, title, body, data));
   const enabled = !!(cfg.key && cfg.keyId && cfg.teamId);
+  const sa = parseServiceAccount(opts.fcm ?? process.env.FCM_SERVICE_ACCOUNT ?? "");
+  const fcmEnabled = !!sa;
+  const http = opts.http ?? require("axios");
 
   // key `${token}|${fn}|${date}` → { token, fn, date, snap, sentBoarding, lastSeen }
   let watches = new Map();
@@ -108,10 +141,46 @@ function createPush(opts = {}) {
     }
   }
 
+  // ── Firebase Cloud Messaging (Android) ──────────────────────────────────
+  let fcmTok = { value: "", exp: 0 };
+  async function fcmAccessToken() {
+    if (fcmTok.value && now() < fcmTok.exp) return fcmTok.value;
+    const iat = Math.floor(now() / 1000);
+    const assertion = jwt.sign(
+      { iss: sa.client_email, scope: "https://www.googleapis.com/auth/firebase.messaging",
+        aud: "https://oauth2.googleapis.com/token", iat, exp: iat + 3600 },
+      sa.private_key, { algorithm: "RS256" });
+    const r = await http.post("https://oauth2.googleapis.com/token",
+      new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }).toString(),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 10000 });
+    fcmTok = { value: r.data.access_token, exp: now() + Math.max(60, (r.data.expires_in || 3600) - 300) * 1000 };
+    return fcmTok.value;
+  }
+  async function fcmSend(token, title, body, data = {}) {
+    if (!fcmEnabled) { console.log(`[push] (FCM not configured) would send: ${title} — ${body}`); return { ok: true, skipped: true }; }
+    try {
+      const at = await fcmAccessToken();
+      const message = {
+        token, notification: { title, body },
+        data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
+        // High priority + our own channel (created by the app) so it pops up like an alert.
+        android: { priority: "HIGH", notification: { channel_id: "flight_alerts", sound: "default" } },
+      };
+      const r = await http.post(`https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`, { message },
+        { headers: { Authorization: `Bearer ${at}` }, timeout: 10000, validateStatus: () => true });
+      if (r.status === 200) return { ok: true, status: 200, env: "fcm" };
+      const code = r.data?.error?.details?.[0]?.errorCode || r.data?.error?.status || "";
+      return { ok: false, status: r.status, env: "fcm", reason: code || String(r.data?.error?.message || "error").slice(0, 100),
+               unregistered: r.status === 404 || code === "UNREGISTERED" };
+    } catch (e) {
+      return { ok: false, status: 0, env: "fcm", reason: `fcm error: ${String(e.response?.data?.error_description || e.message || e).slice(0, 100)}` };
+    }
+  }
+
   // ── Registration ────────────────────────────────────────────────────────
   // Replace-set semantics per device: whatever the app sends is the full list.
   function register(token, flights) {
-    if (!TOKEN_RE.test(String(token || ""))) return { error: "bad token" };
+    if (!tokenKind(token)) return { error: "bad token" };
     const list = (Array.isArray(flights) ? flights : []).slice(0, 20).map((f) => ({
       fn: String(f?.flightNumber || "").replace(/\s/g, "").toUpperCase(), date: String(f?.date || ""),
     })).filter((f) => FN_RE.test(f.fn) && DATE_RE.test(f.date));
@@ -181,7 +250,7 @@ function createPush(opts = {}) {
     for (const a of alerts) {
       const r = await send(w.token, a.title, a.body, { page: "dashboard" });
       console.log(`[push] ${w.fn} ${w.date}: "${a.title}" → ${r.ok ? "sent" : `failed (${r.status} ${r.reason})`}`);
-      if (r.status === 410 || r.reason === "Unregistered") {
+      if (r.unregistered || r.status === 410 || r.reason === "Unregistered") {
         for (const k of [...watches.keys()]) if (k.startsWith(w.token + "|")) watches.delete(k);
         break;
       }
@@ -211,10 +280,12 @@ function createPush(opts = {}) {
   // Apple's own response so setup problems (bad key, wrong topic…) are visible.
   const lastTest = new Map();
   async function sendTest(token) {
-    if (!TOKEN_RE.test(String(token || ""))) return { ok: false, reason: "bad token" };
+    const kind = tokenKind(token);
+    if (!kind) return { ok: false, reason: "bad token" };
     if (now() - (lastTest.get(token) || 0) < 30000) return { ok: false, reason: "wait 30s between tests" };
     lastTest.set(token, now());
-    if (!enabled) return { ok: false, reason: "APNs not configured on the server" };
+    if (kind === "apns" && !enabled) return { ok: false, reason: "APNs not configured on the server" };
+    if (kind === "fcm" && !fcmEnabled) return { ok: false, reason: "Android (FCM) is not configured on the server" };
     return send(token, "✈️ Flownto test alert", "Closed-app alerts are working.", { page: "dashboard" });
   }
 
@@ -228,10 +299,11 @@ function createPush(opts = {}) {
       rawLength: raw.length, hasBegin: /-----BEGIN/.test(raw), hasEnd: /-----END/.test(raw),
       type: m ? m[1] : null, bodyChars: m ? m[2].replace(/\s+/g, "").length : null,
       parses, keyIdLength: cfg.keyId.length, teamIdLength: cfg.teamId.length,
+      fcm: { configured: fcmEnabled, projectId: sa ? sa.project_id : null },
     };
   }
 
   return { register, pollOnce, start, diff, enabled, sendTest, keyInfo, _watches: () => watches, _send: send };
 }
 
-module.exports = { createPush, normalizeKey };
+module.exports = { createPush, normalizeKey, tokenKind, parseServiceAccount };
