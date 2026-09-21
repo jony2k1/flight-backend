@@ -2164,8 +2164,8 @@ app.post("/watch", (req, res) => {
 
 // Non-secret status so setup can be verified without reading Render logs.
 app.post("/push/test", async (req, res) => {
-  const r = await push.sendTest(req.body?.token);
-  res.status(r.ok ? 200 : 400).json({ ok: !!r.ok, status: r.status, reason: r.reason, env: r.env });
+  const r = await push.sendTest(req.body?.token, req.body?.delaySec);
+  res.status(r.ok ? 200 : 400).json({ ok: !!r.ok, status: r.status, reason: r.reason, env: r.env, scheduled: r.scheduled });
 });
 app.get("/push/status", (req, res) => res.json({ apnsConfigured: push.enabled, watches: push._watches().size, key: push.keyInfo() }));
 

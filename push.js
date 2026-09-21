@@ -279,13 +279,20 @@ function createPush(opts = {}) {
   // One-off self-test: send an alert to a single device token (rate-limited). Returns
   // Apple's own response so setup problems (bad key, wrong topic…) are visible.
   const lastTest = new Map();
-  async function sendTest(token) {
+  async function sendTest(token, delaySec = 0) {
     const kind = tokenKind(token);
     if (!kind) return { ok: false, reason: "bad token" };
     if (now() - (lastTest.get(token) || 0) < 30000) return { ok: false, reason: "wait 30s between tests" };
     lastTest.set(token, now());
     if (kind === "apns" && !enabled) return { ok: false, reason: "APNs not configured on the server" };
     if (kind === "fcm" && !fcmEnabled) return { ok: false, reason: "Android (FCM) is not configured on the server" };
+    // Optional delay (max 30 s) so the tester can lock the phone or close the app first — the only
+    // way to prove delivery to a locked/closed app, since an immediate push lands while it's open.
+    const d = Math.min(30, Math.max(0, Number(delaySec) || 0));
+    if (d > 0) {
+      setTimeout(() => { send(token, "✈️ Flownto test alert", "Closed-app alerts are working.", { page: "dashboard" }).catch(() => {}); }, d * 1000);
+      return { ok: true, status: 200, env: kind === "fcm" ? "fcm" : "apns", scheduled: d };
+    }
     return send(token, "✈️ Flownto test alert", "Closed-app alerts are working.", { page: "dashboard" });
   }
 
