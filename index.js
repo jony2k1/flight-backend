@@ -1725,7 +1725,17 @@ app.post("/scan-boarding-pass", async (req, res) => {
 
     const mt = mediaType && /^image\/(jpeg|png|gif|webp)$/.test(mediaType) ? mediaType : "image/jpeg";
 
-    const prompt = `You are reading a boarding pass photo. Extract the flight details and return ONLY a JSON object — no markdown, no commentary.
+    // Broad "read any flight info" prompt — was previously scoped tightly to a physical boarding
+    // pass layout and rejected anything else, so an airline app / confirmation-email / e-ticket
+    // screenshot (real UI chrome, other buttons/text around the flight) got rejected outright even
+    // though the flight details were plainly visible. This now accepts any source and, when a
+    // screenshot shows several flights (e.g. a search list), asks it to pick the one that's clearly
+    // the user's own booked/confirmed trip rather than an option being compared.
+    const prompt = `You are reading a photo or screenshot that shows flight details — this could be a
+physical/digital boarding pass, an e-ticket, a booking confirmation email or PDF, an airline
+app or website screen (manage booking, trip details, itinerary), or any other document that
+shows a specific flight. Extract the flight details and return ONLY a JSON object — no markdown,
+no commentary.
 
 Fields:
 {
@@ -1748,10 +1758,18 @@ Fields:
 }
 
 Rules:
-- Use null for any field that is not clearly visible on the pass.
+- Ignore surrounding app chrome — navigation bars, buttons, ads, unrelated account info, other
+  flights being compared in a search list. Focus only on the one flight that is clearly the
+  user's own booked/confirmed trip (look for words like "Confirmed", "Booked", "Your flight",
+  a PNR/booking reference, or a boarding pass/ticket layout).
+- If the screen shows MULTIPLE legs of one trip (e.g. outbound + return, or a connection), extract
+  only the FIRST leg shown / the one nearest the top, and ignore the rest — the app will let the
+  user add the other legs separately.
+- Use null for any field that is not clearly visible.
 - If city names are missing, infer from IATA code (BOM=Mumbai, DEL=Delhi, JED=Jeddah, RUH=Riyadh, DXB=Dubai, LHR=London, JFK=New York, etc).
 - Convert any date to YYYY-MM-DD.
-- If you cannot read a boarding pass at all, return: {"error":"not_a_boarding_pass"}
+- Only return the error below if there is truly NO identifiable flight (route/flight number/date) anywhere in the image — a busy screenshot with a real flight in it should still be extracted, not rejected.
+- If you genuinely cannot find any flight information at all, return: {"error":"not_a_boarding_pass"}
 - Return ONLY the JSON object. No \`\`\`json fences.`;
 
     const response = await axios.post(
