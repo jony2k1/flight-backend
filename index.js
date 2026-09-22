@@ -1725,52 +1725,59 @@ app.post("/scan-boarding-pass", async (req, res) => {
 
     const mt = mediaType && /^image\/(jpeg|png|gif|webp)$/.test(mediaType) ? mediaType : "image/jpeg";
 
-    // Broad "read any flight info" prompt — was previously scoped tightly to a physical boarding
-    // pass layout and rejected anything else, so an airline app / confirmation-email / e-ticket
-    // screenshot (real UI chrome, other buttons/text around the flight) got rejected outright even
-    // though the flight details were plainly visible. This now accepts any source and, when a
-    // screenshot shows several flights (e.g. a search list), asks it to pick the one that's clearly
-    // the user's own booked/confirmed trip rather than an option being compared.
-    const prompt = `You are reading a photo or screenshot that shows flight details — this could be a
-physical/digital boarding pass, an e-ticket, a booking confirmation email or PDF, an airline
-app or website screen (manage booking, trip details, itinerary), or any other document that
-shows a specific flight. Extract the flight details and return ONLY a JSON object — no markdown,
-no commentary.
+    // Broad, airline-agnostic, MULTI-LEG "read any flight document" prompt. Works for any airline's
+    // layout (Saudia, Emirates, IndiGo, a generic GDS e-ticket PDF, a forwarded email, an app
+    // screenshot with UI chrome around it, etc). Returns a LIST of flights, because a single
+    // e-ticket or itinerary commonly shows an outbound + return, or a connecting journey with
+    // multiple legs — the old version only ever extracted the first one it saw.
+    const prompt = `You are reading a photo, screenshot, or document that shows one or more flights —
+this could be from ANY airline, in ANY format: a physical/digital boarding pass, a GDS-style
+e-ticket/PDF receipt, a booking confirmation email, an airline app or website screen (manage
+booking, trip details, itinerary), or anything else that shows real flight segments. Extract
+EVERY distinct flight leg you can find and return ONLY a JSON object — no markdown, no commentary.
 
-Fields:
 {
-  "from": "IATA code of departure airport (3 letters)",
-  "fromCity": "Full city name of departure",
-  "to": "IATA code of arrival airport (3 letters)",
-  "toCity": "Full city name of arrival",
-  "airline": "Airline name (e.g. Emirates, IndiGo, Saudia)",
-  "flightNumber": "Flight number including airline code (e.g. EK203, 6E456)",
-  "date": "YYYY-MM-DD format",
-  "departure": "HH:MM 24-hour local departure time",
-  "arrival": "HH:MM 24-hour local arrival time (only if printed)",
-  "boarding": "HH:MM 24-hour local boarding time (look for 'Boarding', 'Boarding Time', 'Board')",
-  "seat": "Seat number (e.g. 12A)",
-  "gate": "Gate number/letter if printed",
-  "terminal": "Terminal number/letter (e.g. T1, 3, B) if printed",
-  "class": "Cabin class (Economy, Business, First, Premium Economy) if printed",
-  "pnr": "Booking reference / PNR if printed",
-  "passenger": "Passenger name if clearly readable"
+  "flights": [
+    {
+      "from": "IATA code of departure airport (3 letters)",
+      "fromCity": "Full city name of departure",
+      "to": "IATA code of arrival airport (3 letters)",
+      "toCity": "Full city name of arrival",
+      "airline": "Airline name (e.g. Emirates, IndiGo, Saudia)",
+      "flightNumber": "Flight number including airline code (e.g. EK203, 6E456, SV1500)",
+      "date": "YYYY-MM-DD format — the DEPARTURE date of this specific leg",
+      "departure": "HH:MM 24-hour local departure time",
+      "arrival": "HH:MM 24-hour local arrival time (only if printed)",
+      "boarding": "HH:MM 24-hour local boarding time (look for 'Boarding', 'Boarding Time', 'Board')",
+      "seat": "Seat number (e.g. 12A)",
+      "gate": "Gate number/letter if printed",
+      "terminal": "Terminal number/letter (e.g. T1, 3, B) if printed",
+      "class": "Cabin class (Economy, Business, First, Premium Economy) if printed",
+      "pnr": "Booking reference / PNR if printed",
+      "passenger": "Passenger name if clearly readable"
+    }
+  ]
 }
 
 Rules:
-- Ignore surrounding app chrome — navigation bars, buttons, ads, unrelated account info, other
-  flights being compared in a search list. Focus only on the one flight that is clearly the
-  user's own booked/confirmed trip (look for words like "Confirmed", "Booked", "Your flight",
-  a PNR/booking reference, or a boarding pass/ticket layout).
-- If the screen shows MULTIPLE legs of one trip (e.g. outbound + return, or a connection), extract
-  only the FIRST leg shown / the one nearest the top, and ignore the rest — the app will let the
-  user add the other legs separately.
-- Use null for any field that is not clearly visible.
-- If city names are missing, infer from IATA code (BOM=Mumbai, DEL=Delhi, JED=Jeddah, RUH=Riyadh, DXB=Dubai, LHR=London, JFK=New York, etc).
+- One array entry PER distinct flight leg/segment actually booked for this passenger — an outbound
+  + return is 2 entries, a connecting itinerary (e.g. domestic leg then international leg) is 2+
+  entries, a single one-way boarding pass is 1 entry. Use each leg's OWN date/time/route — do not
+  merge legs together or repeat the same leg twice.
+- Ignore surrounding chrome — navigation bars, buttons, ads, legal text, price/fare-rule fine print,
+  seat maps, unrelated account info, or OTHER passengers' bookings — and ignore flights being merely
+  compared/offered in a search-results list that were not actually booked.
+- Only include a flight if it's clearly the user's own booked/confirmed segment — a PNR, "Confirmed",
+  "Booked", a boarding pass layout, or an e-ticket flight-details block are all good signals.
+- Cap at 8 legs even if more appear to be present (extract the first 8 in document order).
+- Use null for any field that is not clearly visible on that leg.
+- If a city name is missing, infer it from the IATA code using a real, correct mapping — never
+  guess a nearby or similarly-named city (e.g. RAH is Rafha, not Riyadh; RUH is Riyadh).
 - Convert any date to YYYY-MM-DD.
-- Only return the error below if there is truly NO identifiable flight (route/flight number/date) anywhere in the image — a busy screenshot with a real flight in it should still be extracted, not rejected.
+- Only return the error below if there is truly NO identifiable flight (no route/flight number/date)
+  anywhere in the image — a busy document with real flights in it should still be extracted fully.
 - If you genuinely cannot find any flight information at all, return: {"error":"not_a_boarding_pass"}
-- Return ONLY the JSON object. No \`\`\`json fences.`;
+- Return ONLY the JSON object described above. No \`\`\`json fences.`;
 
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
