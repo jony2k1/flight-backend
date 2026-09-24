@@ -2194,6 +2194,32 @@ app.post("/push/test", async (req, res) => {
 });
 app.get("/push/status", (req, res) => res.json({ apnsConfigured: push.enabled, watches: push._watches().size, key: push.keyInfo() }));
 
+// ── Flight writes relayed through the backend (see firestoreAdmin.js) ──
+const firestoreAdmin = require("./firestoreAdmin");
+app.post("/flights/add", async (req, res) => {
+  try {
+    const { idToken, flight } = req.body || {};
+    if (!idToken || !flight) return res.status(400).json({ ok: false, reason: "missing idToken or flight" });
+    const r = await firestoreAdmin.addFlight(idToken, flight);
+    res.json({ ok: true, id: r.id });
+  } catch (err) {
+    console.error("[flights/add] error:", err?.message);
+    res.status(400).json({ ok: false, reason: err?.message || "failed" });
+  }
+});
+app.post("/flights/delete", async (req, res) => {
+  try {
+    const { idToken, firebaseId } = req.body || {};
+    if (!idToken || !firebaseId) return res.status(400).json({ ok: false, reason: "missing idToken or firebaseId" });
+    const r = await firestoreAdmin.deleteFlight(idToken, firebaseId);
+    res.status(r.deleted ? 200 : 400).json({ ok: r.deleted, reason: r.reason });
+  } catch (err) {
+    console.error("[flights/delete] error:", err?.message);
+    res.status(400).json({ ok: false, reason: err?.message || "failed" });
+  }
+});
+app.get("/flights/relay-status", (req, res) => res.json({ enabled: firestoreAdmin.enabled() }));
+
 app.listen(PORT, () => {
   push.start();
   console.log(`✈️ Server running on http://localhost:${PORT}`);
