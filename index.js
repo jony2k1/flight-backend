@@ -1307,8 +1307,9 @@ app.get("/flight-info", async (req, res) => {
       if (prev && prev.found !== false) { usage.staleServed++; return res.json({ ...prev, _stale: true }); }
       usage.notFound++;
       // short cache so we retry sooner
-      flightCache[cacheKey] = { data: { found: false }, ts: Date.now() - 3300000 }; // expires in 5 min
-      return res.json(isRateLimited("aerodatabox") ? { found: false, reason: "rate_limited" } : { found: false });
+      const negative = isRateLimited("aerodatabox") ? { found: false, reason: "rate_limited" } : { found: false };
+      flightCache[cacheKey] = { data: negative, ts: Date.now() - 3300000 }; // expires in 5 min
+      return res.json(negative);
     }
 
     const schedDep = flight.departure?.scheduledTime?.utc;
