@@ -236,9 +236,19 @@ function createPush(opts = {}) {
     const hoursOut = (dep - now()) / 3600000;
     if (hoursOut > 36 + 14) return false;          // too early to bother
     if (hoursOut < -48) { watches.delete(`${w.token}|${w.fn}|${w.date}`); return true; } // long gone
-    const near = hoursOut < 8;
-    const d = await fetchFlight(w.fn, w.date, near ? 300 : 1800);
+    // How fresh must the data be? Every cache miss is a paid upstream call (AeroDataBox units), and the old rule
+    // ("within 8 h of 00:00Z of the flight date" → 5 min) meant ~32 h of 5-minute polling PER watched flight.
+    // Use the real scheduled departure once we know it: tight only when delay/gate/boarding alerts matter.
+    const dh = w.depMs ? (w.depMs - now()) / 3600000 : hoursOut;     // hours until departure
+    let maxAge;
+    if (dh > 24) maxAge = 6 * 3600;           // far away: 6 h
+    else if (dh > 6) maxAge = 1800;           // 30 min
+    else if (dh > 0.5) maxAge = 600;          // 10 min — gate / delay changes
+    else if (dh > -0.5) maxAge = 300;         // 5 min around departure (boarding)
+    else maxAge = 1800;                       // airborne: 30 min
+    const d = await fetchFlight(w.fn, w.date, maxAge);
     if (!d || !d.found) return false;
+    { const t = Date.parse(String(d.scheduledDepUtc || "").replace(" ", "T")); if (Number.isFinite(t)) w.depMs = t; }
     const { alerts, snap } = diff(w.snap, d, w);
     // Boarding — once, from the source's own status.
     const isBoarding = String(d.status || "").toLowerCase().includes("boarding");
