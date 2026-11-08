@@ -852,10 +852,7 @@ async function enrichDistance(result) {
   if (!result || !result.from || !result.to) return result;
   if (result.distanceKm > 0 && result.flightTime) return result;
   try {
-    const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/airports/iata/${result.from}/distance-time/${result.to}?flightTimeModel=Standard`,
-      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" }, timeout: 8000 }
-    );
+    const r = { data: await adbDistanceTime(result.from, result.to) };
     if (!result.distanceKm) result.distanceKm = Math.round(r.data?.greatCircleDistance?.km || 0);
     if (!result.flightTime) result.flightTime = r.data?.approxFlightTime || "";
   } catch (e) {
@@ -1104,9 +1101,66 @@ function inferStatus(result) {
 // ── FLIGHT INFO (AeroDataBox → AirLabs schedule → AviationStack → AirLabs live) ───
 const flightCache = {};
 
+// ── usage counters (in memory, reset on every Render restart) — answers "where did the quota go?" ──
+const usage = { since: new Date().toISOString(), flightInfoReq: 0, cacheHit: 0, staleServed: 0, adbCalls: 0, adbApproxUnits: 0, adb429: 0,
+  fallbackRuns: 0, fallbackHit: 0, notFound: 0, byCaller: {} };
+// ── shared AeroDataBox helpers ────────────────────────────────────────────────────────────────────────────────
+// Every AeroDataBox call costs API units (Pro plan = 5,000 units/month, hard limit). So: (1) all calls go through
+// adbGet, which refuses to call while the quota is exhausted and pauses 15 min on a 429; (2) data that rarely changes
+// is memoised for hours/days, concurrent identical requests share one upstream call, and a stale value is served if
+// the upstream fails.
+const memoCache = new Map(), memoInflight = new Map();
+async function memo(key, ttlMs, producer) {
+  const hit = memoCache.get(key);
+  if (hit && Date.now() - hit.ts < ttlMs) return hit.val;
+  if (memoInflight.has(key)) return memoInflight.get(key);
+  const p = (async () => {
+    try {
+      const val = await producer();
+      memoCache.set(key, { ts: Date.now(), val });
+      if (memoCache.size > 3000) memoCache.delete(memoCache.keys().next().value);   // keep memory bounded
+      return val;
+    } catch (e) {
+      if (hit) return hit.val;                       // stale beats nothing
+      throw e;
+    } finally { memoInflight.delete(key); }
+  })();
+  memoInflight.set(key, p);
+  return p;
+}
+async function adbGet(url, cfg = {}) {
+  if (isRateLimited("aerodatabox")) { const e = new Error("AeroDataBox paused (quota)"); e.paused = true; throw e; }
+  usage.adbCalls++;
+  try {
+    return await axios.get(url, { ...cfg, headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } });
+  } catch (e) {
+    if (e.response?.status === 429) { usage.adb429++; markRateLimited("aerodatabox", 0.25); }
+    throw e;
+  }
+}
+// Route duration/distance never really changes → 30 days. Keeps the 1 call/second pacing for real calls only.
+function adbDistanceTime(dep, arr, qs = "flightTimeModel=Standard") {
+  return memo(`dt:${dep}-${arr}:${qs}`, 30 * 86400000, async () => {
+    await new Promise((r) => setTimeout(r, 1100));
+    return (await adbGet(`https://aerodatabox.p.rapidapi.com/airports/iata/${dep}/distance-time/${arr}?${qs}`, { timeout: 8000 })).data;
+  });
+}
+
+app.get("/provider-status", (req, res) => {
+  const now = Date.now();
+  res.json({
+    usage,
+    pausedUntil: Object.fromEntries(Object.entries(rateLimited).map(([k, v]) => [k, v > now ? new Date(v).toISOString() : null])),
+    cacheEntries: Object.keys(flightCache).length,
+    keysConfigured: { aerodatabox: !!process.env.AERODATABOX_KEY, airlabs: !!(process.env.AIRLABS_KEY || process.env.AIRLABS_API_KEY), aviationstack: !!(process.env.AVIATIONSTACK_KEY || API_KEY) },
+  });
+});
+
 app.get("/flight-info", async (req, res) => {
   try {
     const { flightNumber, date } = req.query;
+    usage.flightInfoReq++;
+    { const who = String(req.headers["user-agent"] || "").includes("node") ? "server(push poller)" : (req.query.maxAge ? "alerts" : "app"); usage.byCaller[who] = (usage.byCaller[who] || 0) + 1; }
     if (!flightNumber) return res.status(400).json({ error: "Flight number required" });
 
     const fn = flightNumber.toUpperCase().replace(/\s/g, "");
@@ -1121,7 +1175,12 @@ app.get("/flight-info", async (req, res) => {
       inferStatus(cached);
       // Alerts poll with ?maxAge=<sec> (5 min close to departure) so delay/gate changes
       // aren't hidden behind the default 1h cache. Clamped to 60s–1h.
-      const maxAgeMs = Math.min(3600, Math.max(60, Number(req.query.maxAge) || 3600)) * 1000;
+      // A flight departing more than 12 h from now changes rarely: cache it 6 h instead of 1 h (saves quota).
+      // Alerts still pass their own short maxAge near departure.
+      const depStr = String(cached.scheduledDepUtc || "").replace(" ", "T");
+      const hoursOut = depStr ? (Date.parse(depStr) - Date.now()) / 3600000 : NaN;
+      const defaultAge = Number.isFinite(hoursOut) && hoursOut > 12 ? 21600 : 3600;
+      const maxAgeMs = Math.min(21600, Math.max(60, Number(req.query.maxAge) || defaultAge)) * 1000;
       const fresh = (Date.now() - flightCache[cacheKey].ts) < maxAgeMs;
       // Once a flight is confirmed Arrived, keep serving it forever instead of
       // re-querying: a landed flight's outcome can't change, but re-querying can
@@ -1134,21 +1193,29 @@ app.get("/flight-info", async (req, res) => {
       // occurrence of the same flight number, flipping a correctly "Landed"
       // flight back to an upcoming "Departs" with a bogus later time.
       if (cached.status === "Arrived" || fresh) {
+        usage.cacheHit++;
         return res.json(cached);
+      }
+      // Provider quota exhausted: serve the last known answer (flagged stale) instead of nothing.
+      if (cached.found !== false && isRateLimited("aerodatabox")) {
+        usage.staleServed++;
+        return res.json({ ...cached, _stale: true });
       }
     }
 
+    // Was 5 dates (up to 5 upstream calls per search when the app sends no date). Three cover today,
+    // an overnight leg from yesterday, and tomorrow — and each AeroDataBox call costs quota.
     const dates = date ? [date] : [
       new Date().toISOString().slice(0, 10),
       new Date(Date.now() + 86400000).toISOString().slice(0, 10),
       new Date(Date.now() - 86400000).toISOString().slice(0, 10),
-      new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10),
-      new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10),
     ];
 
     let flight = null;
     for (const d of dates) {
+      if (isRateLimited("aerodatabox")) break;          // quota exhausted: don't burn more calls, go to the fallbacks
       try {
+        usage.adbCalls++; usage.adbApproxUnits += 2;      // flight status is a Tier-2 endpoint (2 API units)
         const r = await axios.get(
           `https://aerodatabox.p.rapidapi.com/flights/number/${fn}/${d}`,
           { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
@@ -1165,7 +1232,7 @@ app.get("/flight-info", async (req, res) => {
           break;
         }
       } catch (e) {
-        if (e.response?.status === 429) break;
+        if (e.response?.status === 429) { usage.adb429++; markRateLimited("aerodatabox", 0.25); break; }   // 15 min pause
       }
     }
 
@@ -1173,6 +1240,7 @@ app.get("/flight-info", async (req, res) => {
       // ── PARALLEL FALLBACK: fire all 3 sources at once, merge results ───
       // Previously sequential (up to 24s). Now parallel: all finish in ~8s max.
       console.log(`AeroDataBox: no data for ${fn}, trying parallel fallbacks...`);
+      usage.fallbackRuns++;
 
       const [airLabsScheduleResult, avStackData, liveData] = await Promise.all([
         // 1. AirLabs schedule — try today + tomorrow + yesterday in parallel
@@ -1228,13 +1296,19 @@ app.get("/flight-info", async (req, res) => {
           if (arr) { fallback.toLat = arr.lat;  fallback.toLng = arr.lng;  }
         }
         console.log(`✓ Fallback hit (${fallback._source}) for ${fn}`);
+        usage.fallbackHit++;
         flightCache[cacheKey] = { data: fallback, ts: Date.now() };
         return res.json(fallback);
       }
 
-      // All sources failed — short cache so we retry sooner
+      // All sources failed. If we ever had a good answer for this flight, give that back (flagged stale)
+      // rather than overwriting it with "not found".
+      const prev = flightCache[cacheKey]?.data;
+      if (prev && prev.found !== false) { usage.staleServed++; return res.json({ ...prev, _stale: true }); }
+      usage.notFound++;
+      // short cache so we retry sooner
       flightCache[cacheKey] = { data: { found: false }, ts: Date.now() - 3300000 }; // expires in 5 min
-      return res.json({ found: false });
+      return res.json(isRateLimited("aerodatabox") ? { found: false, reason: "rate_limited" } : { found: false });
     }
 
     const schedDep = flight.departure?.scheduledTime?.utc;
@@ -1249,12 +1323,8 @@ app.get("/flight-info", async (req, res) => {
       const depIata = flight.departure?.airport?.iata;
       const arrIata = flight.arrival?.airport?.iata;
       if (depIata && arrIata) {
-        await new Promise(r => setTimeout(r, 1100));
-        const ftRes = await axios.get(
-          `https://aerodatabox.p.rapidapi.com/airports/iata/${depIata}/distance-time/${arrIata}?flightTimeModel=Standard`,
-          { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-        );
-        flightTime = ftRes.data?.approxFlightTime || "";
+        const ftData = await adbDistanceTime(depIata, arrIata);
+        flightTime = ftData?.approxFlightTime || "";
       }
     } catch (e) {
       console.log("flightTime error:", e.message);
@@ -1337,11 +1407,7 @@ result.from = hub;
 result.fromCity = HUB_CITIES[hub] || hub;
     // Get flight time
     try {
-      await new Promise(r => setTimeout(r, 1100));
-      const ftRes = await axios.get(
-        `https://aerodatabox.p.rapidapi.com/airports/iata/${hub}/distance-time/${result.to}?flightTimeModel=Standard`,
-        { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-      );
+      const ftRes = { data: await adbDistanceTime(hub, result.to) };
   result.flightTime = ftRes.data?.approxFlightTime || "";
       result.distanceKm = Math.round(ftRes.data?.greatCircleDistance?.km || 0);
       // Calculate dep time from arrival - duration
@@ -1459,11 +1525,9 @@ app.get("/airport-info", async (req, res) => {
   try {
     const { iata } = req.query;
     if (!iata) return res.status(400).json({ error: "IATA required" });
-    const response = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/airports/iata/${iata.toUpperCase()}`,
-      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-    );
-    res.json(response.data);
+    // airport details almost never change → 7 days
+    res.json(await memo(`apinfo:${iata.toUpperCase()}`, 7 * 86400000, async () =>
+      (await adbGet(`https://aerodatabox.p.rapidapi.com/airports/iata/${iata.toUpperCase()}`)).data));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1514,12 +1578,10 @@ app.get("/similar-flights", async (req, res) => {
 app.get("/flight-autocomplete", async (req, res) => {
   try {
     const { q } = req.query;
-    if (!q || q.length < 2) return res.json({ items: [] });
-    const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/flights/search/term?q=${q.toUpperCase()}`,
-      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-    );
-    res.json({ items: r.data?.items || [] });
+    if (!q || q.length < 3) return res.json({ items: [] });        // 3 chars (was 2): fewer useless keystroke lookups
+    const items = await memo(`ac:${q.toUpperCase()}`, 6 * 3600000, async () =>
+      (await adbGet(`https://aerodatabox.p.rapidapi.com/flights/search/term?q=${encodeURIComponent(q.toUpperCase())}`)).data?.items || []);
+    res.json({ items });
   } catch (e) {
     res.json({ items: [] });
   }
@@ -1530,10 +1592,8 @@ app.get("/aircraft-details", async (req, res) => {
   try {
     const { reg } = req.query;
     if (!reg) return res.json({ found: false });
-    const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/aircrafts/reg/${reg.toUpperCase()}`,
-      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-    );
+    const r = { data: await memo(`acd:${reg.toUpperCase()}`, 7 * 86400000, async () =>
+      (await adbGet(`https://aerodatabox.p.rapidapi.com/aircrafts/reg/${reg.toUpperCase()}`)).data) };
     if (r.data) return res.json({
       found: true,
       reg: r.data.reg,
@@ -1557,11 +1617,10 @@ app.get("/flight-dates", async (req, res) => {
     const today = new Date();
     const from = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
     const to = new Date(today.getFullYear(), today.getMonth() + 2, 0).toISOString().slice(0, 10);
-    const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/flights/number/${flightNumber.toUpperCase().replace(/\s/g, "")}/dates/${from}/${to}`,
-      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-    );
-    res.json({ dates: Array.isArray(r.data) ? r.data : [] });
+    const fnc = flightNumber.toUpperCase().replace(/\s/g, "");
+    const data = await memo(`fd:${fnc}:${from}`, 6 * 3600000, async () =>
+      (await adbGet(`https://aerodatabox.p.rapidapi.com/flights/number/${fnc}/dates/${from}/${to}`)).data);
+    res.json({ dates: Array.isArray(data) ? data : [] });
   } catch (e) {
     res.json({ dates: [] });
   }
@@ -1573,19 +1632,18 @@ app.get("/find-aircraft-reg", async (req, res) => {
     const { flightNumber } = req.query;
     if (!flightNumber) return res.json({ reg: "" });
     const fn = flightNumber.toUpperCase().replace(/\s/g, "");
-    for (let i = 1; i <= 7; i++) {
-      const date = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
-      try {
-        const r = await axios.get(
-          `https://aerodatabox.p.rapidapi.com/flights/number/${fn}/${date}`,
-          { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-        );
-        if (Array.isArray(r.data) && r.data.length > 0 && r.data[0].aircraft?.reg) {
-          return res.json({ reg: r.data[0].aircraft.reg, date });
-        }
-      } catch (e) {}
-    }
-    res.json({ reg: "" });
+    // up to 7 upstream calls per lookup before — now at most once per 6 h per flight number, and it stops when the quota is paused
+    const found = await memo(`far:${fn}`, 6 * 3600000, async () => {
+      for (let i = 1; i <= 7; i++) {
+        const date = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+        try {
+          const r = await adbGet(`https://aerodatabox.p.rapidapi.com/flights/number/${fn}/${date}`);
+          if (Array.isArray(r.data) && r.data.length > 0 && r.data[0].aircraft?.reg) return { reg: r.data[0].aircraft.reg, date };
+        } catch (e) { if (e.paused || e.response?.status === 429) break; }
+      }
+      return { reg: "" };
+    });
+    return res.json(found);
   } catch (e) {
     res.json({ reg: "" });
   }
@@ -1595,11 +1653,8 @@ app.get("/find-aircraft-reg", async (req, res) => {
 app.get("/flight-time", async (req, res) => {
   try {
     const { dep, arr } = req.query;
-    const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/airports/iata/${dep}/distance-time/${arr}?flightTimeModel=ML01&withDistance=true`,
-      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-    );
-    res.json(r.data);
+    if (!dep || !arr) return res.json({ error: true });
+    res.json(await adbDistanceTime(String(dep).toUpperCase(), String(arr).toUpperCase(), "flightTimeModel=ML01&withDistance=true"));
   } catch (e) {
     res.json({ error: true });
   }
@@ -1612,13 +1667,11 @@ app.get("/airport-delays", async (req, res) => {
     const { iata } = req.query;
     if (!iata) return res.json({ error: true });
     const key = iata.toUpperCase();
-    if (delaysCache[key] && (Date.now() - delaysCache[key].ts) < 600000) {
+    if (delaysCache[key] && (Date.now() - delaysCache[key].ts) < 1200000) {          // 20 min (was 10)
       return res.json({ ...delaysCache[key].data, cached: true });
     }
-    const r = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/airports/iata/${key}/delays`,
-      { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-    );
+    if (isRateLimited("aerodatabox") && delaysCache[key]) return res.json({ ...delaysCache[key].data, cached: true, stale: true });
+    const r = await adbGet(`https://aerodatabox.p.rapidapi.com/airports/iata/${key}/delays`);
     delaysCache[key] = { data: r.data, ts: Date.now() };
     res.json(r.data);
   } catch (e) {
@@ -1691,14 +1744,9 @@ app.get("/route-flights", async (req, res) => {
     const { from, to, date } = req.query;
     if (!from || !to) return res.status(400).json({ error: "from and to required" });
     const useDate = date || new Date().toISOString().slice(0, 10);
-    const response = await axios.get(
-      `https://aerodatabox.p.rapidapi.com/flights/airports/iata/${from}/${useDate}T00:00/${useDate}T23:59`,
-      {
-        params: { withLeg: true, direction: "Departure", withCancelled: false, withCodeshared: false, withCargo: false },
-        headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" }
-      }
-    );
-    const flights = response.data?.departures || [];
+    const flights = await memo(`rf:${String(from).toUpperCase()}:${useDate}`, 3600000, async () =>
+      (await adbGet(`https://aerodatabox.p.rapidapi.com/flights/airports/iata/${from}/${useDate}T00:00/${useDate}T23:59`,
+        { params: { withLeg: true, direction: "Departure", withCancelled: false, withCodeshared: false, withCargo: false } })).data?.departures || []);
     const matching = flights
       .filter(f => f.arrival?.airport?.iata === to.toUpperCase())
       .map(f => ({
