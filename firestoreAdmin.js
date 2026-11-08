@@ -58,4 +58,15 @@ async function deleteFlight(idToken, firebaseId) {
   return { deleted: true };
 }
 
-module.exports = { enabled, addFlight, deleteFlight };
+// Persistent flight-info backup (server-only collection). Survives Render restarts/redeploys.
+async function cacheGet(key) {
+  const a = getApp(); if (!a) return null;
+  const d = await getFirestore(a).collection("flightInfoCache").doc(key).get();
+  return d.exists ? d.data() : null;
+}
+async function cacheSet(key, data) {
+  const a = getApp(); if (!a) return;
+  await getFirestore(a).collection("flightInfoCache").doc(key).set({ json: JSON.stringify(data), ts: Date.now() });
+}
+
+module.exports = { enabled, addFlight, deleteFlight, cacheGet, cacheSet };

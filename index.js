@@ -1102,7 +1102,7 @@ function inferStatus(result) {
 const flightCache = {};
 
 // ── usage counters (in memory, reset on every Render restart) — answers "where did the quota go?" ──
-const usage = { since: new Date().toISOString(), flightInfoReq: 0, cacheHit: 0, staleServed: 0, adbCalls: 0, adbApproxUnits: 0, adb429: 0,
+const usage = { since: new Date().toISOString(), flightInfoReq: 0, cacheHit: 0, staleServed: 0, persistedServed: 0, persistedWrites: 0, lowQuotaSkips: 0, unitsRemaining: null, rateHeaders: null, adbCalls: 0, adbApproxUnits: 0, adb429: 0,
   fallbackRuns: 0, fallbackHit: 0, notFound: 0, byCaller: {} };
 // ── shared AeroDataBox helpers ────────────────────────────────────────────────────────────────────────────────
 // Every AeroDataBox call costs API units (Pro plan = 5,000 units/month, hard limit). So: (1) all calls go through
@@ -1128,11 +1128,25 @@ async function memo(key, ttlMs, producer) {
   memoInflight.set(key, p);
   return p;
 }
+const LOW_UNITS = 400;     // below this, keep the remaining units for core flight lookups only
 async function adbGet(url, cfg = {}) {
+  const { essential, ...axCfg } = cfg;
   if (isRateLimited("aerodatabox")) { const e = new Error("AeroDataBox paused (quota)"); e.paused = true; throw e; }
+  if (!essential && usage.unitsRemaining != null && usage.unitsRemaining < LOW_UNITS) {
+    usage.lowQuotaSkips++; const e = new Error("AeroDataBox units reserved for flight lookups"); e.paused = true; throw e;
+  }
   usage.adbCalls++;
   try {
-    return await axios.get(url, { ...cfg, headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } });
+    const r = await axios.get(url, { ...axCfg, headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } });
+    try {   // RapidAPI reports the remaining quota in response headers — remember it
+      const h = {}; for (const [k, v] of Object.entries(r.headers || {})) if (/^x-ratelimit/i.test(k)) h[k.toLowerCase()] = v;
+      if (Object.keys(h).length) {
+        usage.rateHeaders = h;
+        const k = Object.keys(h).find((x) => /unit/.test(x) && /remaining/.test(x));
+        if (k && Number.isFinite(+h[k])) usage.unitsRemaining = +h[k];
+      }
+    } catch {}
+    return r;
   } catch (e) {
     if (e.response?.status === 429) { usage.adb429++; markRateLimited("aerodatabox", 0.25); }
     throw e;
@@ -1142,8 +1156,30 @@ async function adbGet(url, cfg = {}) {
 function adbDistanceTime(dep, arr, qs = "flightTimeModel=Standard") {
   return memo(`dt:${dep}-${arr}:${qs}`, 30 * 86400000, async () => {
     await new Promise((r) => setTimeout(r, 1100));
-    return (await adbGet(`https://aerodatabox.p.rapidapi.com/airports/iata/${dep}/distance-time/${arr}?${qs}`, { timeout: 8000 })).data;
+    return (await adbGet(`https://aerodatabox.p.rapidapi.com/airports/iata/${dep}/distance-time/${arr}?${qs}`, { timeout: 8000, essential: true })).data;
   });
+}
+
+// ── persistent backup of flight-info answers (Firestore, survives Render restarts) ──────────────────────────────
+// Used ONLY when every live source fails (quota exhausted, outage): the app then shows the last known data flagged
+// _stale instead of "unavailable". Writes are throttled to one per flight every 20 min.
+const persistedAt = new Map();
+function persistFlight(key, data) {
+  try {
+    if (!firestoreAdmin.enabled() || !data || data.found === false) return;
+    if (Date.now() - (persistedAt.get(key) || 0) < 20 * 60000) return;
+    persistedAt.set(key, Date.now());
+    usage.persistedWrites++;
+    firestoreAdmin.cacheSet(key, data).catch((e) => console.log("persist failed:", e.message));
+  } catch {}
+}
+async function persistedFlight(key, maxAgeMs) {
+  try {
+    if (!firestoreAdmin.enabled()) return null;
+    const d = await firestoreAdmin.cacheGet(key);
+    if (!d || !d.json || Date.now() - d.ts > maxAgeMs) return null;
+    return { ...JSON.parse(d.json), _stale: true, _persisted: true, _ageMin: Math.round((Date.now() - d.ts) / 60000) };
+  } catch { return null; }
 }
 
 app.get("/provider-status", (req, res) => {
@@ -1152,6 +1188,7 @@ app.get("/provider-status", (req, res) => {
     usage,
     pausedUntil: Object.fromEntries(Object.entries(rateLimited).map(([k, v]) => [k, v > now ? new Date(v).toISOString() : null])),
     cacheEntries: Object.keys(flightCache).length,
+    persistentCache: firestoreAdmin.enabled(),
     keysConfigured: { aerodatabox: !!process.env.AERODATABOX_KEY, airlabs: !!(process.env.AIRLABS_KEY || process.env.AIRLABS_API_KEY), aviationstack: !!(process.env.AVIATIONSTACK_KEY || API_KEY) },
   });
 });
@@ -1215,11 +1252,8 @@ app.get("/flight-info", async (req, res) => {
     for (const d of dates) {
       if (isRateLimited("aerodatabox")) break;          // quota exhausted: don't burn more calls, go to the fallbacks
       try {
-        usage.adbCalls++; usage.adbApproxUnits += 2;      // flight status is a Tier-2 endpoint (2 API units)
-        const r = await axios.get(
-          `https://aerodatabox.p.rapidapi.com/flights/number/${fn}/${d}`,
-          { headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } }
-        );
+        usage.adbApproxUnits += 2;      // flight status is a Tier-2 endpoint (2 API units)
+        const r = await adbGet(`https://aerodatabox.p.rapidapi.com/flights/number/${fn}/${d}`, { essential: true });
         if (Array.isArray(r.data) && r.data.length > 0) {
           // AeroDataBox returns every leg touching this local date, so an overnight
           // flight lists last night's already-landed leg first. Prefer the leg whose
@@ -1232,7 +1266,7 @@ app.get("/flight-info", async (req, res) => {
           break;
         }
       } catch (e) {
-        if (e.response?.status === 429) { usage.adb429++; markRateLimited("aerodatabox", 0.25); break; }   // 15 min pause
+        if (e.paused || e.response?.status === 429) break;   // adbGet already paused the provider for 15 min on a 429
       }
     }
 
@@ -1298,6 +1332,7 @@ app.get("/flight-info", async (req, res) => {
         console.log(`✓ Fallback hit (${fallback._source}) for ${fn}`);
         usage.fallbackHit++;
         flightCache[cacheKey] = { data: fallback, ts: Date.now() };
+        persistFlight(cacheKey, fallback);
         return res.json(fallback);
       }
 
@@ -1305,6 +1340,9 @@ app.get("/flight-info", async (req, res) => {
       // rather than overwriting it with "not found".
       const prev = flightCache[cacheKey]?.data;
       if (prev && prev.found !== false) { usage.staleServed++; return res.json({ ...prev, _stale: true }); }
+      // Nothing live and nothing in memory: fall back to the last answer we ever stored (a week for a dated flight, a day if no date)
+      const kept = await persistedFlight(cacheKey, date ? 7 * 86400000 : 86400000);
+      if (kept) { usage.persistedServed++; try { inferStatus(kept); } catch {} return res.json(kept); }   // re-derive Arrived/En Route from the clock
       usage.notFound++;
       // short cache so we retry sooner
       const negative = isRateLimited("aerodatabox") ? { found: false, reason: "rate_limited" } : { found: false };
@@ -1431,6 +1469,7 @@ result.fromCity = HUB_CITIES[hub] || hub;
     inferStatus(result);
 
     flightCache[cacheKey] = { data: result, ts: Date.now() };
+    persistFlight(cacheKey, result);
     return res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
