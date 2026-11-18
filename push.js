@@ -189,7 +189,7 @@ function createPush(opts = {}) {
     for (const f of list) {
       const k = `${token}|${f.fn}|${f.date}`;
       const prev = watches.get(k);
-      watches.set(k, { token, fn: f.fn, date: f.date, snap: prev?.snap || null, sentBoarding: !!prev?.sentBoarding, lastSeen: now() });
+      watches.set(k, { token, fn: f.fn, date: f.date, snap: prev?.snap || null, sentBoarding: !!prev?.sentBoarding, nf: prev?.nf || 0, nextAt: prev?.nextAt || 0, lastSeen: now() });
     }
     save();
     return { ok: true, watching: list.length };
@@ -235,6 +235,7 @@ function createPush(opts = {}) {
     const dep = Date.parse(`${w.date}T00:00:00Z`);
     const hoursOut = (dep - now()) / 3600000;
     if (hoursOut > 36 + 14) return false;          // too early to bother
+    if (w.nextAt && now() < w.nextAt) return false; // flight kept coming back "not found" → backing off (see below)
     if (hoursOut < -48) { watches.delete(`${w.token}|${w.fn}|${w.date}`); return true; } // long gone
     // How fresh must the data be? Every cache miss is a paid upstream call (AeroDataBox units), and the old rule
     // ("within 8 h of 00:00Z of the flight date" → 5 min) meant ~32 h of 5-minute polling PER watched flight.
@@ -247,7 +248,15 @@ function createPush(opts = {}) {
     else if (dh > -0.5) maxAge = 300;         // 5 min around departure (boarding)
     else maxAge = 1800;                       // airborne: 30 min
     const d = await fetchFlight(w.fn, w.date, maxAge);
-    if (!d || !d.found) return false;
+    if (!d || !d.found) {
+      // Quota/budget answers aren't the flight's fault — don't count them. A flight that genuinely isn't found 3 polls in a
+      // row (wrong number/date, not in any feed) is only re-checked every 3 h, instead of burning API units every 5 min.
+      if (d && (d.reason === "rate_limited" || d.reason === "alert_budget")) return false;
+      w.nf = (w.nf || 0) + 1;
+      if (w.nf >= 3) w.nextAt = now() + 3 * 3600 * 1000;
+      return false;
+    }
+    w.nf = 0; w.nextAt = 0;
     { const t = Date.parse(String(d.scheduledDepUtc || "").replace(" ", "T")); if (Number.isFinite(t)) w.depMs = t; }
     const { alerts, snap } = diff(w.snap, d, w);
     // Boarding — once, from the source's own status.

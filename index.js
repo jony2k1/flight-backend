@@ -958,6 +958,46 @@ async function fetchOpenSkyPosition(callSign, icao24) {
   }
 }
 
+// ── ADSB.LOL: free community ADS-B feed (no key, costs NO API units) ─────────────────────────────────────────────
+// Real aircraft position (lat/lon, baro altitude, ground speed, track, OAT). Used first; OpenSky stays as a fallback.
+// Same field names as the OpenSky helper so everything downstream is unchanged.
+async function fetchAdsbLolPosition(callSign, reg, icao24) {
+  const cs = String(callSign || "").toUpperCase().replace(/\s/g, "");
+  const tries = [];
+  if (icao24) tries.push(`hex/${encodeURIComponent(String(icao24).toLowerCase())}`);
+  if (cs) tries.push(`callsign/${encodeURIComponent(cs)}`);
+  if (reg) tries.push(`reg/${encodeURIComponent(String(reg).toUpperCase())}`);
+  for (const t of tries) {
+    try {
+      const r = await axios.get(`https://api.adsb.lol/v2/${t}`, { timeout: 6000 });
+      const list = (r.data?.ac || []).filter((a) => a && a.lat != null && a.lon != null);
+      if (!list.length) continue;
+      const a = (t.startsWith("callsign") && list.find((x) => String(x.flight || "").trim().toUpperCase() === cs)) || list[0];
+      const onGround = a.alt_baro === "ground";
+      const altFt = typeof a.alt_baro === "number" ? Math.round(a.alt_baro) : 0;
+      const gsKt = Number.isFinite(+a.gs) ? +a.gs : null;
+      const seen = Number.isFinite(+a.seen_pos) ? +a.seen_pos : (Number.isFinite(+a.seen) ? +a.seen : 0);
+      return {
+        liveIcao24: a.hex || "",
+        liveCallSign: String(a.flight || "").trim(),
+        liveLat: +a.lat, liveLng: +a.lon,
+        liveAltFt: altFt, liveAltMeters: Math.round(altFt / 3.281),
+        liveOnGround: onGround,
+        liveSpeedKph: gsKt != null ? Math.round(gsKt * 1.852) : null,
+        liveSpeedMs: gsKt != null ? +(gsKt * 0.5144).toFixed(1) : null,
+        liveHeading: Number.isFinite(+a.track) ? +a.track : (Number.isFinite(+a.true_heading) ? +a.true_heading : null),
+        liveVerticalRate: Number.isFinite(+a.baro_rate) ? +(a.baro_rate * 0.00508).toFixed(1) : null,
+        liveOatC: Number.isFinite(+a.oat) ? +a.oat : null,
+        liveLastContact: Math.floor(Date.now() / 1000 - seen),
+        liveFeed: "adsb.lol",
+      };
+    } catch (e) { /* try the next lookup */ }
+  }
+  return null;
+}
+// one upstream call per aircraft per 20 s, however many phones ask
+const liveFix = (cs, reg, hex) => memo(`live:${cs || ""}|${reg || ""}|${hex || ""}`, 20000, () => fetchAdsbLolPosition(cs, reg, hex));
+
 // Enrich any flight result with live position data
 async function enrichLivePosition(result) {
   if (!result || result.found === false) return result;
@@ -965,8 +1005,10 @@ async function enrichLivePosition(result) {
     || (result.airlineIcao && result.flightNumber
         ? result.airlineIcao + String(result.flightNumber).replace(/^[A-Z]+/i, "")
         : null);
-  if (!cs && !result.aircraftIcao24) return result;
-  const live = await fetchOpenSkyPosition(cs, result.aircraftIcao24);
+  if (!cs && !result.aircraftIcao24 && !result.aircraftReg) return result;
+  let live = await liveFix(cs, result.aircraftReg, result.aircraftIcao24);
+  let feed = "adsb-lol";
+  if (!live) { live = await fetchOpenSkyPosition(cs, result.aircraftIcao24); feed = "opensky"; }
   if (live) {
     // Only trust OpenSky telemetry when it describes an aircraft that is
     // actually flying RIGHT NOW. A reused callsign frequently matches a plane
@@ -984,7 +1026,7 @@ async function enrichLivePosition(result) {
     if (fresh && airborne && hasPos) {
       Object.assign(result, live);
       result.liveAgeSec = ageSec;
-      result._source = (result._source ? result._source + "+" : "") + "opensky";
+      result._source = (result._source ? result._source + "+" : "") + feed;
     } else {
       result._openskyRejected = { ageSec, onGround: !!live.liveOnGround, speedKph: live.liveSpeedKph, altFt: live.liveAltFt };
     }
@@ -1128,6 +1170,13 @@ async function memo(key, ttlMs, producer) {
   memoInflight.set(key, p);
   return p;
 }
+function alertBudget() {
+  try {
+    const left = usage.unitsRemaining, rs = Number(Object.entries(usage.rateHeaders || {}).find(([k]) => /unit/.test(k) && /reset/.test(k))?.[1]);
+    if (left != null && Number.isFinite(rs) && rs > 0) return Math.max(40, Math.floor((left / Math.max(1, rs / 86400)) * 0.5));
+  } catch {}
+  return 80;
+}
 const LOW_UNITS = 400;     // below this, keep the remaining units for core flight lookups only
 async function adbGet(url, cfg = {}) {
   const { essential, ...axCfg } = cfg;
@@ -1183,6 +1232,7 @@ async function persistedFlight(key, maxAgeMs) {
 }
 
 app.get("/provider-status", (req, res) => {
+  try { usage.alertBudgetToday = alertBudget(); } catch {}
   const now = Date.now();
   res.json({
     usage,
@@ -1191,6 +1241,30 @@ app.get("/provider-status", (req, res) => {
     persistentCache: firestoreAdmin.enabled(),
     keysConfigured: { aerodatabox: !!process.env.AERODATABOX_KEY, airlabs: !!(process.env.AIRLABS_KEY || process.env.AIRLABS_API_KEY), aviationstack: !!(process.env.AVIATIONSTACK_KEY || API_KEY) },
   });
+});
+
+// Lightweight live aircraft fix for the tracker (called every ~20 s while a flight is airborne and the tracker is open).
+// Costs no API units: it reuses what /flight-info already learnt about the flight (callsign / registration) and asks the
+// free ADS-B feed. 20 s shared cache. ?flightNumber=EK44&date=YYYY-MM-DD  (optional ?callsign= &reg= &hex=)
+app.get("/live-position", async (req, res) => {
+  try {
+    const fn = String(req.query.flightNumber || "").toUpperCase().replace(/\s/g, "");
+    const date = req.query.date ? String(req.query.date) : "";
+    let cs = String(req.query.callsign || "").toUpperCase().replace(/\s/g, "");
+    let reg = String(req.query.reg || "").toUpperCase();
+    let hex = String(req.query.hex || "").toLowerCase();
+    const known = (fn && (flightCache[`v3-${fn}-${date}`] || flightCache[`v3-${fn}`]))?.data;
+    if (known && known.found !== false) {
+      if (!cs) cs = known.callSign || (known.airlineIcao ? known.airlineIcao + String(known.flightNumber || fn).replace(/\s/g, "").slice(2) : "");
+      if (!reg) reg = known.aircraftReg || "";
+      if (!hex) hex = known.aircraftIcao24 || "";
+    }
+    if (!cs && !reg && !hex) return res.json({ found: false, reason: "unknown_flight" });
+    const live = await liveFix(cs, reg, hex);
+    if (!live) return res.json({ found: false, reason: "no_fix" });
+    const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - (live.liveLastContact || 0));
+    res.json({ found: true, ...live, liveAgeSec: ageSec, fetchedAt: Date.now() });
+  } catch (e) { res.status(500).json({ found: false, error: e.message }); }
 });
 
 app.get("/flight-info", async (req, res) => {
@@ -1204,8 +1278,15 @@ app.get("/flight-info", async (req, res) => {
     // v3 = added fromLat/fromLng/toLat/toLng for OfflineTracker
     const cacheKey = date ? `v3-${fn}-${date}` : `v3-${fn}`;
 
+    const isAlert = !!req.query.maxAge;      // the push poller (and only it) asks with maxAge
     if (flightCache[cacheKey]) {
       const cached = flightCache[cacheKey].data;
+      // A "not found" answer is remembered on its own clock: 5 min for people searching, 30 min for the alert poller.
+      // (It used to be judged against the poller's short maxAge, so it was always "stale" and every 5-minute poll
+      //  re-ran the full AeroDataBox + 7 fallback lookups for a flight that simply isn't there.)
+      if (cached.found === false && flightCache[cacheKey].negAt) {
+        if (Date.now() - flightCache[cacheKey].negAt < (isAlert ? 30 : 5) * 60000) { usage.cacheHit++; return res.json(cached); }
+      }
       // Re-run status inference on cached data so a flight cached as "Active"/"En Route"
       // automatically becomes "Arrived" once enough time has passed since arrival,
       // without burning another API call.
@@ -1248,9 +1329,23 @@ app.get("/flight-info", async (req, res) => {
       new Date(Date.now() - 86400000).toISOString().slice(0, 10),
     ];
 
+    // Daily unit budget for the alert poller, so background polling can never eat the whole month (the app's own
+    // lookups keep the rest). Budget = half of "units left ÷ days until the quota resets", at least 40 units/day.
+    if (isAlert) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (usage.alertDay !== today) { usage.alertDay = today; usage.alertUnitsToday = 0; }
+      if (usage.alertUnitsToday >= alertBudget()) {
+        usage.alertCapSkips = (usage.alertCapSkips || 0) + 1;
+        const prev = flightCache[cacheKey]?.data;
+        if (prev && prev.found !== false) return res.json({ ...prev, _stale: true });
+        return res.json({ found: false, reason: "alert_budget" });          // not cached: retried tomorrow / next poll
+      }
+    }
+
     let flight = null;
     for (const d of dates) {
-      if (isRateLimited("aerodatabox")) break;          // quota exhausted: don't burn more calls, go to the fallbacks
+      if (isRateLimited("aerodatabox")) break;
+      if (isAlert) usage.alertUnitsToday = (usage.alertUnitsToday || 0) + 2;          // quota exhausted: don't burn more calls, go to the fallbacks
       try {
         usage.adbApproxUnits += 2;      // flight status is a Tier-2 endpoint (2 API units)
         const r = await adbGet(`https://aerodatabox.p.rapidapi.com/flights/number/${fn}/${d}`, { essential: true });
@@ -1346,7 +1441,7 @@ app.get("/flight-info", async (req, res) => {
       usage.notFound++;
       // short cache so we retry sooner
       const negative = isRateLimited("aerodatabox") ? { found: false, reason: "rate_limited" } : { found: false };
-      flightCache[cacheKey] = { data: negative, ts: Date.now() - 3300000 }; // expires in 5 min
+      flightCache[cacheKey] = { data: negative, ts: Date.now() - 3300000, negAt: Date.now() };
       return res.json(negative);
     }
 
