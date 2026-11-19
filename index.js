@@ -1178,13 +1178,23 @@ function alertBudget() {
   return 80;
 }
 const LOW_UNITS = 400;     // below this, keep the remaining units for core flight lookups only
+// AeroDataBox allows ~1 request per second. The app fires several lookups at once (flight, airport, aircraft, delays) and the push
+// poller shares the same key, so bursts used to earn a 429 — which then paused EVERY lookup for 15 min ("service is busy").
+// Now every call takes a slot ≥ 1.1 s after the previous one, and a per-second 429 is retried once instead of pausing.
+let adbNextSlot = 0;
+async function adbPace() {
+  const now = Date.now(), at = Math.max(now, adbNextSlot);
+  adbNextSlot = at + 1100;
+  if (at > now) await new Promise((r) => setTimeout(r, at - now));
+}
 async function adbGet(url, cfg = {}) {
-  const { essential, ...axCfg } = cfg;
+  const { essential, _retried, ...axCfg } = cfg;
   if (isRateLimited("aerodatabox")) { const e = new Error("AeroDataBox paused (quota)"); e.paused = true; throw e; }
   if (!essential && usage.unitsRemaining != null && usage.unitsRemaining < LOW_UNITS) {
     usage.lowQuotaSkips++; const e = new Error("AeroDataBox units reserved for flight lookups"); e.paused = true; throw e;
   }
   usage.adbCalls++;
+  await adbPace();
   try {
     const r = await axios.get(url, { ...axCfg, headers: { "X-RapidAPI-Key": process.env.AERODATABOX_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" } });
     try {   // RapidAPI reports the remaining quota in response headers — remember it
@@ -1197,7 +1207,16 @@ async function adbGet(url, cfg = {}) {
     } catch {}
     return r;
   } catch (e) {
-    if (e.response?.status === 429) { usage.adb429++; markRateLimited("aerodatabox", 0.25); }
+    if (e.response?.status === 429) {
+      usage.adb429++;
+      const msg = JSON.stringify(e.response?.data || "").toLowerCase();
+      const quotaGone = /monthly|quota|plan limit|exceeded the/.test(msg) || (usage.unitsRemaining != null && usage.unitsRemaining <= 0);
+      if (!quotaGone && !_retried) {                     // just too fast: wait a moment and try once more, no pause
+        await new Promise((r) => setTimeout(r, 1500));
+        return adbGet(url, { ...cfg, _retried: true });
+      }
+      markRateLimited("aerodatabox", quotaGone ? 3 : 0.05);   // real quota end → 3 h; still too fast → 3 min
+    }
     throw e;
   }
 }
