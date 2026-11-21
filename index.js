@@ -1286,6 +1286,15 @@ app.get("/live-position", async (req, res) => {
   } catch (e) { res.status(500).json({ found: false, error: e.message }); }
 });
 
+// departure / arrival instants (ms) of an AeroDataBox leg
+function adbLegWindow(f) {
+  try {
+    const ms = (t) => { const u = t?.utc; if (!u) return NaN; return Date.parse(String(u).replace(" ", "T").replace(/Z?$/, "Z").replace(/ZZ$/, "Z")); };
+    const dep = ms(f?.departure?.revisedTime) || ms(f?.departure?.scheduledTime), arr = ms(f?.arrival?.predictedTime) || ms(f?.arrival?.revisedTime) || ms(f?.arrival?.scheduledTime);
+    return Number.isFinite(dep) && Number.isFinite(arr) ? { dep, arr } : null;
+  } catch { return null; }
+}
+
 app.get("/flight-info", async (req, res) => {
   try {
     const { flightNumber, date } = req.query;
@@ -1310,6 +1319,9 @@ app.get("/flight-info", async (req, res) => {
       // automatically becomes "Arrived" once enough time has passed since arrival,
       // without burning another API call.
       inferStatus(cached);
+      // A cached answer carries the ADS-B fix from the moment it was cached (up to 1 h ago) but still said "liveAgeSec: 10". The app then
+      // believed a 56-minute-old position was fresh. Age it by the real clock.
+      if (cached.liveLastContact) cached.liveAgeSec = Math.max(0, Math.floor(Date.now() / 1000) - cached.liveLastContact);
       // Alerts poll with ?maxAge=<sec> (5 min close to departure) so delay/gate changes
       // aren't hidden behind the default 1h cache. Clamped to 60s–1h.
       // A flight departing more than 12 h from now changes rarely: cache it 6 h instead of 1 h (saves quota).
@@ -1329,7 +1341,11 @@ app.get("/flight-info", async (req, res) => {
       // on its real-time endpoint). Those can silently hand back a different
       // occurrence of the same flight number, flipping a correctly "Landed"
       // flight back to an upcoming "Departs" with a bogus later time.
-      if (cached.status === "Arrived" || fresh) {
+      // "Arrived is final" only for a dated lookup. A date-less key (v3-QR1238) is "the current flight": yesterday's landed leg must not be
+      // served as today's answer forever, so it counts as final for just 6 h after its arrival.
+      const arrAtMs = Date.parse(String(cached.scheduledArrUtc || "").replace(" ", "T"));
+      const arrivedFinal = cached.status === "Arrived" && (date || !Number.isFinite(arrAtMs) || Date.now() - arrAtMs < 6 * 3600000);
+      if (arrivedFinal || fresh) {
         usage.cacheHit++;
         return res.json(cached);
       }
@@ -1362,6 +1378,7 @@ app.get("/flight-info", async (req, res) => {
     }
 
     let flight = null;
+    const cands = [];
     for (const d of dates) {
       if (isRateLimited("aerodatabox")) break;
       if (isAlert) usage.alertUnitsToday = (usage.alertUnitsToday || 0) + 2;          // quota exhausted: don't burn more calls, go to the fallbacks
@@ -1373,7 +1390,15 @@ app.get("/flight-info", async (req, res) => {
           // flight lists last night's already-landed leg first. Prefer the leg whose
           // scheduled departure date matches the date the user saved.
           const depDate = (f) => String(f?.departure?.scheduledTime?.local || f?.departure?.revisedTime?.local || "").slice(0, 10);
-          flight = r.data.find(f => depDate(f) === d) || r.data[0];
+          const leg = r.data.find(f => depDate(f) === d) || r.data[0];
+          if (date) { flight = leg; break; }
+          // NO date given (the app's search box): the first date with data used to win — and that is "today" in UTC, which for an overnight /
+          // after-midnight flight is YESTERDAY's already-landed leg (QR1238 showed "Landed" while it was in the air). Keep one leg per date and
+          // pick the one that is flying right now, otherwise the one closest to now.
+          cands.push(leg);
+          const t0 = adbLegWindow(leg), nowMs = Date.now();
+          if (t0 && nowMs >= t0.dep - 45 * 60000 && nowMs <= t0.arr + 20 * 60000) { flight = leg; break; }
+          continue;
           // First successful match wins — was previously requiring aircraft.reg
           // which made us fall through today's pre-departure data and return
           // yesterday's already-arrived flight, so live flights showed "Arrived".
@@ -1382,6 +1407,12 @@ app.get("/flight-info", async (req, res) => {
       } catch (e) {
         if (e.paused || e.response?.status === 429) break;   // adbGet already paused the provider for 15 min on a 429
       }
+    }
+
+    if (!flight && cands.length) {
+      const nowMs = Date.now();
+      const dist = (leg) => { const w = adbLegWindow(leg); return w ? Math.min(Math.abs(nowMs - w.dep), Math.abs(nowMs - w.arr)) : Infinity; };
+      flight = cands.slice().sort((x, y) => dist(x) - dist(y))[0];
     }
 
     if (!flight) {
