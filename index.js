@@ -1345,7 +1345,8 @@ app.get("/flight-info", async (req, res) => {
       // served as today's answer forever, so it counts as final for just 6 h after its arrival.
       const arrAtMs = Date.parse(String(cached.scheduledArrUtc || "").replace(" ", "T"));
       const arrivedFinal = cached.status === "Arrived" && (date || !Number.isFinite(arrAtMs) || Date.now() - arrAtMs < 6 * 3600000);
-      if (arrivedFinal || fresh) {
+      const staleArrived = cached.status === "Arrived" && !date && Number.isFinite(arrAtMs) && Date.now() - arrAtMs >= 6 * 3600000;   // yesterday's landed leg is never "fresh" for a date-less lookup
+      if (arrivedFinal || (fresh && !staleArrived)) {
         usage.cacheHit++;
         return res.json(cached);
       }
