@@ -117,15 +117,72 @@ app.get("/airports/search", async (req, res) => {
   }
 });
 
+// ── OPEN-METEO FALLBACK ───────────────────────────────────────
+// OpenWeather's free key runs out (429 seen 25 Nov 2026), which broke weather, AQI and city
+// search for every app version at once. Open-Meteo is free with no key; these helpers return the
+// SAME shapes as the OpenWeather calls so the apps don't need to change.
+const WMO = (c) => {
+  if (c === 0) return ["Clear", "clear sky", "01"];
+  if (c === 1) return ["Clouds", "few clouds", "02"];
+  if (c === 2) return ["Clouds", "scattered clouds", "03"];
+  if (c === 3) return ["Clouds", "overcast clouds", "04"];
+  if (c === 45 || c === 48) return ["Fog", "fog", "50"];
+  if (c >= 51 && c <= 57) return ["Drizzle", "drizzle", "09"];
+  if (c >= 61 && c <= 67) return ["Rain", c >= 65 ? "heavy rain" : "rain", "10"];
+  if (c >= 71 && c <= 77) return ["Snow", "snow", "13"];
+  if (c >= 80 && c <= 82) return ["Rain", "rain showers", "09"];
+  if (c === 85 || c === 86) return ["Snow", "snow showers", "13"];
+  if (c >= 95) return ["Thunderstorm", "thunderstorm", "11"];
+  return ["Clouds", "cloudy", "03"];
+};
+// Open-Meteo's first hit can be a small town ("Bali" → Bāli, India). Rank the top hits by name
+// match, place type (capital, island, region) and population instead.
+const _norm = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const _FEAT = { PPLC: 2, PCLI: 1.5, ISL: 1.5, ADM1: 1.5, PPLA: 1 };
+async function omGeocode(name) {
+  const r = await axios.get(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=10&language=en&format=json`, { timeout: 8000 });
+  const q = String(name || "").trim();
+  const score = (g) => (_norm(g.name) === _norm(q) ? 2 : 0) + (g.name.toLowerCase() === q.toLowerCase() ? 1 : 0) +
+    (_FEAT[g.feature_code] || 0) + (g.population ? Math.log10(g.population) / 3 : 0);
+  const g = (r.data?.results || []).slice().sort((a, b) => score(b) - score(a))[0];
+  return g ? { name: g.name, lat: g.latitude, lon: g.longitude, country: g.country_code, state: g.admin1 || undefined } : null;
+}
+async function omWeather(lat, lon, name = "", country = "") {
+  const r = await axios.get(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,cloud_cover,is_day` +
+    `&daily=sunrise,sunset&forecast_days=1&timezone=auto&timeformat=unixtime&wind_speed_unit=ms`, { timeout: 8000 });
+  const c = r.data?.current || {};
+  const [main, description, icon] = WMO(c.weather_code);
+  return {
+    coord: { lat, lon }, name, cod: 200, timezone: r.data?.utc_offset_seconds ?? 0,
+    weather: [{ main, description, icon: icon + (c.is_day === 0 ? "n" : "d") }],
+    main: { temp: c.temperature_2m, feels_like: c.apparent_temperature, humidity: c.relative_humidity_2m, pressure: c.surface_pressure != null ? Math.round(c.surface_pressure) : null },
+    wind: { speed: c.wind_speed_10m, deg: c.wind_direction_10m }, clouds: { all: c.cloud_cover },
+    sys: { country, sunrise: r.data?.daily?.sunrise?.[0] || null, sunset: r.data?.daily?.sunset?.[0] || null },
+    _source: "open-meteo",
+  };
+}
+async function omAqi(lat, lon) {
+  const r = await axios.get(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=european_aqi,pm2_5,pm10`, { timeout: 8000 });
+  const c = r.data?.current || {};
+  const e = c.european_aqi;
+  const aqi = e == null ? 3 : e <= 20 ? 1 : e <= 40 ? 2 : e <= 60 ? 3 : e <= 80 ? 4 : 5;
+  return { aqi, pm25: c.pm2_5, pm10: c.pm10 };
+}
+
 // ── WEATHER ───────────────────────────────────────────────────
 app.get("/weather", async (req, res) => {
+  const { city } = req.query;
   try {
-    const { city } = req.query;
     const response = await axios.get(
       `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${WEATHER_KEY}&units=metric`
     );
-    res.json(response.data);
+    return res.json(response.data);
   } catch (err) {
+    try {
+      const g = await omGeocode(city);
+      if (g) return res.json(await omWeather(g.lat, g.lon, g.name, g.country));
+    } catch {}
     res.status(500).json({ error: err.message });
   }
 });
@@ -134,10 +191,15 @@ app.get("/weather", async (req, res) => {
 app.get("/aqi", async (req, res) => {
   try {
     const { lat, lon } = req.query;
-    const r = await axios.get(`https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${WEATHER_KEY}`);
-    const aqi = r.data.list[0];
     const labels = ["", "Good 🟢", "Fair 🟡", "Moderate 🟠", "Poor 🔴", "Very Poor 🟣"];
-    res.json({ aqi: aqi.main.aqi, label: labels[aqi.main.aqi], pm25: aqi.components.pm2_5, pm10: aqi.components.pm10 });
+    try {
+      const r = await axios.get(`https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${WEATHER_KEY}`);
+      const aqi = r.data.list[0];
+      return res.json({ aqi: aqi.main.aqi, label: labels[aqi.main.aqi], pm25: aqi.components.pm2_5, pm10: aqi.components.pm10 });
+    } catch {
+      const a = await omAqi(lat, lon);
+      return res.json({ ...a, label: labels[a.aqi], _source: "open-meteo" });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -147,8 +209,12 @@ app.get("/aqi", async (req, res) => {
 app.get("/geocode", async (req, res) => {
   try {
     const { city } = req.query;
-    const r = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${WEATHER_KEY}`);
-    res.json(r.data[0] || null);
+    try {
+      const r = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${WEATHER_KEY}`);
+      return res.json(r.data[0] || null);
+    } catch {
+      return res.json(await omGeocode(city));
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -594,7 +660,10 @@ app.post("/nylas-emails", async (req, res) => {
 app.post("/trip-plan", async (req, res) => {
   try {
     const { destination, fromCity, duration, month, budget, tripType } = req.body;
-    const prompt = `You are an expert travel planner. Destination: ${destination}, From: ${fromCity}, Duration: ${duration}, Month: ${month}, Budget: ${budget}, Trip type: ${tripType}. Return ONLY valid JSON no markdown: {"destination":"city","country":"country","tagline":"inspiring tagline","description":"2-3 human inspiring lines","weather":"weather in ${month}","visa":"visa info for Saudi/GCC passport","currency":"local currency name and symbol only like AED, THB, GBP","language":"local language and 2 useful phrases","timezone":"UTC offset","bestTime":"is ${month} good and why","travelVibe":"Relax/Adventure/Luxury/City Life","estimatedBudget":{"flightLocal":"price range in local currency with symbol","hotelPerNight":"price per night in local currency with symbol","dailySpend":"daily spend in local currency with symbol","totalTrip":"total trip estimate in local currency with symbol"},"attractions":[{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"},{"name":"name","desc":"1 line","emoji":"emoji","type":"hidden-gem"},{"name":"name","desc":"1 line","emoji":"emoji","type":"food"},{"name":"name","desc":"1 line","emoji":"emoji","type":"activity"},{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"}],"nearbyDestinations":[{"city":"city","country":"country","emoji":"emoji","reason":"why visit"},{"city":"city","country":"country","emoji":"emoji","reason":"why"},{"city":"city","country":"country","emoji":"emoji","reason":"why"}],"hotelAreas":["area1","area2","area3"],"foodMustTry":["dish1","dish2","dish3"],"packingList":{"essential":["item1","item2","item3"],"clothing":["item1","item2","item3"],"documents":["item1","item2"]},"dayPlan":[{"day":1,"title":"Arrival","activities":["act1","act2","act3"]},{"day":2,"title":"Explore","activities":["act1","act2","act3"]},{"day":3,"title":"Hidden Gems","activities":["act1","act2","act3"]}],"tips":["tip1","tip2","tip3"],"moodTips":{"Relax":["destination specific relax tip1","tip2","tip3"],"Adventure":["destination specific adventure tip1","tip2","tip3"],"Budget":["destination specific budget tip1","tip2","tip3"],"Luxury":["destination specific luxury tip1","tip2","tip3"]}}`;
+    // Apps from 2.14 send the traveller's country; older ones don't, and keep the old Saudi/GCC wording.
+    const passport = String(req.body.passport || "").replace(/[^A-Za-z .'-]/g, "").trim().slice(0, 40);
+    const visaFor = passport ? `a ${passport} passport holder, 1-2 lines, end with: check the official embassy site before booking` : "Saudi/GCC passport";
+    const prompt = `You are an expert travel planner. Destination: ${destination}, From: ${fromCity}, Duration: ${duration}, Month: ${month}, Budget: ${budget}, Trip type: ${tripType}. Return ONLY valid JSON no markdown: {"destination":"city","country":"country","tagline":"inspiring tagline","description":"2-3 human inspiring lines","weather":"weather in ${month}","visa":"visa info for ${visaFor}","currency":"local currency name and symbol only like AED, THB, GBP","language":"local language and 2 useful phrases","timezone":"UTC offset","bestTime":"is ${month} good and why","travelVibe":"Relax/Adventure/Luxury/City Life","estimatedBudget":{"flightLocal":"price range in local currency with symbol","hotelPerNight":"price per night in local currency with symbol","dailySpend":"daily spend in local currency with symbol","totalTrip":"total trip estimate in local currency with symbol"},"attractions":[{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"},{"name":"name","desc":"1 line","emoji":"emoji","type":"hidden-gem"},{"name":"name","desc":"1 line","emoji":"emoji","type":"food"},{"name":"name","desc":"1 line","emoji":"emoji","type":"activity"},{"name":"name","desc":"1 line","emoji":"emoji","type":"must-see"}],"nearbyDestinations":[{"city":"city","country":"country","emoji":"emoji","reason":"why visit"},{"city":"city","country":"country","emoji":"emoji","reason":"why"},{"city":"city","country":"country","emoji":"emoji","reason":"why"}],"hotelAreas":["area1","area2","area3"],"foodMustTry":["dish1","dish2","dish3"],"packingList":{"essential":["item1","item2","item3"],"clothing":["item1","item2","item3"],"documents":["item1","item2"]},"dayPlan":[{"day":1,"title":"Arrival","activities":["act1","act2","act3"]},{"day":2,"title":"Explore","activities":["act1","act2","act3"]},{"day":3,"title":"Hidden Gems","activities":["act1","act2","act3"]}],"tips":["tip1","tip2","tip3"],"moodTips":{"Relax":["destination specific relax tip1","tip2","tip3"],"Adventure":["destination specific adventure tip1","tip2","tip3"],"Budget":["destination specific budget tip1","tip2","tip3"],"Luxury":["destination specific luxury tip1","tip2","tip3"]}}`;
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       { model: "claude-haiku-4-5-20251001", max_tokens: 4096, messages: [{ role: "user", content: prompt }] },
@@ -1891,10 +1960,15 @@ app.get("/airport-weather", async (req, res) => {
     if (airportsCache.length === 0) await loadAirports();
     const ap = airportsCache.find(a => a.iata === key);
     if (!ap) return res.json({ error: true, msg: "airport not found" });
-    const r = await axios.get(
-      `https://api.openweathermap.org/data/2.5/weather?lat=${ap.lat}&lon=${ap.lng}&appid=${WEATHER_KEY}&units=metric`
-    );
-    const w = r.data;
+    let w;
+    try {
+      const r = await axios.get(
+        `https://api.openweathermap.org/data/2.5/weather?lat=${ap.lat}&lon=${ap.lng}&appid=${WEATHER_KEY}&units=metric`
+      );
+      w = r.data;
+    } catch {
+      w = await omWeather(ap.lat, ap.lng, ap.city || key, ap.country || "");
+    }
     const data = {
       iata: key,
       tempC: Math.round(w.main?.temp ?? 0),
