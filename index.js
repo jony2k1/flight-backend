@@ -1144,7 +1144,7 @@ function inferStatus(result) {
 const flightCache = {};
 
 // ── usage counters (in memory, reset on every Render restart) — answers "where did the quota go?" ──
-const usage = { since: new Date().toISOString(), flightInfoReq: 0, cacheHit: 0, staleServed: 0, persistedServed: 0, persistedWrites: 0, lowQuotaSkips: 0, unitsRemaining: null, rateHeaders: null, adbCalls: 0, adbApproxUnits: 0, adb429: 0,
+const usage = { since: new Date().toISOString(), flightInfoReq: 0, cacheHit: 0, staleServed: 0, persistedServed: 0, persistedWrites: 0, lowQuotaSkips: 0, invalidSkips: 0, notFoundRecent: [], unitsRemaining: null, rateHeaders: null, adbCalls: 0, adbApproxUnits: 0, adb429: 0,
   fallbackRuns: 0, fallbackHit: 0, notFound: 0, byCaller: {} };
 // ── shared AeroDataBox helpers ────────────────────────────────────────────────────────────────────────────────
 // Every AeroDataBox call costs API units (Pro plan = 5,000 units/month, hard limit). So: (1) all calls go through
@@ -1169,6 +1169,10 @@ async function memo(key, ttlMs, producer) {
   })();
   memoInflight.set(key, p);
   return p;
+}
+// Last 40 flight numbers that found nothing (no user data), shown in /provider-status to tell typos from real gaps in coverage.
+function noteNotFound(fn, date, why) {
+  try { usage.notFoundRecent.unshift({ fn, date: date || null, why, at: new Date().toISOString() }); usage.notFoundRecent.length = Math.min(usage.notFoundRecent.length, 40); } catch {}
 }
 function alertBudget() {
   try {
@@ -1303,17 +1307,26 @@ app.get("/flight-info", async (req, res) => {
     if (!flightNumber) return res.status(400).json({ error: "Flight number required" });
 
     const fn = flightNumber.toUpperCase().replace(/\s/g, "");
+    // Not a flight number at all (just an airline code "EK", a route "DXBJFK", a bare "773"): answer without spending API units.
+    // Accepts IATA (EK44, 6E2041, G9123) and ICAO (UAE44) designators with 1-4 digits and an optional suffix letter.
+    if (!/^([A-Z][A-Z0-9]|[0-9][A-Z])[A-Z]?\d{1,4}[A-Z]?$/.test(fn)) {
+      usage.invalidSkips++; noteNotFound(fn, date, "invalid");
+      return res.json({ found: false, reason: "invalid_flight_number" });
+    }
     // v3 = added fromLat/fromLng/toLat/toLng for OfflineTracker
     const cacheKey = date ? `v3-${fn}-${date}` : `v3-${fn}`;
 
     const isAlert = !!req.query.maxAge;      // the push poller (and only it) asks with maxAge
     if (flightCache[cacheKey]) {
       const cached = flightCache[cacheKey].data;
-      // A "not found" answer is remembered on its own clock: 5 min for people searching, 30 min for the alert poller.
+      // A "not found" answer is remembered on its own clock: 6 h for people searching, 1 h for the alert poller
+      // (5 min only when it was caused by a rate limit). It used to be 5 min, so the same typo or non-operating flight
+      // searched again re-ran 3 AeroDataBox dates + the fallbacks every time.
       // (It used to be judged against the poller's short maxAge, so it was always "stale" and every 5-minute poll
       //  re-ran the full AeroDataBox + 7 fallback lookups for a flight that simply isn't there.)
       if (cached.found === false && flightCache[cacheKey].negAt) {
-        if (Date.now() - flightCache[cacheKey].negAt < (isAlert ? 30 : 5) * 60000) { usage.cacheHit++; return res.json(cached); }
+        const negMin = cached.reason === "rate_limited" ? 5 : (isAlert ? 60 : 360);
+        if (Date.now() - flightCache[cacheKey].negAt < negMin * 60000) { usage.cacheHit++; return res.json(cached); }
       }
       // Re-run status inference on cached data so a flight cached as "Active"/"En Route"
       // automatically becomes "Arrived" once enough time has passed since arrival,
@@ -1489,8 +1502,8 @@ app.get("/flight-info", async (req, res) => {
       // Nothing live and nothing in memory: fall back to the last answer we ever stored (a week for a dated flight, a day if no date)
       const kept = await persistedFlight(cacheKey, date ? 7 * 86400000 : 86400000);
       if (kept) { usage.persistedServed++; try { inferStatus(kept); } catch {} return res.json(kept); }   // re-derive Arrived/En Route from the clock
-      usage.notFound++;
-      // short cache so we retry sooner
+      usage.notFound++; noteNotFound(fn, date, "no_data");
+      // remembered for a while (see negMin above) so repeated searches don't spend units again
       const negative = isRateLimited("aerodatabox") ? { found: false, reason: "rate_limited" } : { found: false };
       flightCache[cacheKey] = { data: negative, ts: Date.now() - 3300000, negAt: Date.now() };
       return res.json(negative);
@@ -1764,7 +1777,7 @@ app.get("/similar-flights", async (req, res) => {
 app.get("/flight-autocomplete", async (req, res) => {
   try {
     const { q } = req.query;
-    if (!q || q.length < 3) return res.json({ items: [] });        // 3 chars (was 2): fewer useless keystroke lookups
+    if (!q || q.replace(/\s/g, "").length < 4) return res.json({ items: [] });   // 4 chars (was 3): each new keystroke string costs an AeroDataBox call
     const items = await memo(`ac:${q.toUpperCase()}`, 6 * 3600000, async () =>
       (await adbGet(`https://aerodatabox.p.rapidapi.com/flights/search/term?q=${encodeURIComponent(q.toUpperCase())}`)).data?.items || []);
     res.json({ items });
