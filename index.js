@@ -657,9 +657,15 @@ app.post("/nylas-emails", async (req, res) => {
 });
 
 // ── TRIP PLAN ─────────────────────────────────────────────────
+// Same request → same plan for 7 days, so a popular city answers at once instead of ~20 s of AI.
+const tripPlanCache = new Map();
+const TRIP_PLAN_TTL = 7 * 24 * 3600 * 1000;
 app.post("/trip-plan", async (req, res) => {
   try {
     const { destination, fromCity, duration, month, budget, tripType } = req.body;
+    const planKey = [destination, fromCity, duration, month, budget, tripType, req.body.passport].map((x) => String(x || "").trim().toLowerCase()).join("|");
+    const hit = tripPlanCache.get(planKey);
+    if (hit && Date.now() - hit.at < TRIP_PLAN_TTL) return res.json(hit.data);
     // Apps from 2.14 send the traveller's country; older ones don't, and keep the old Saudi/GCC wording.
     const passport = String(req.body.passport || "").replace(/[^A-Za-z .'-]/g, "").trim().slice(0, 40);
     const visaFor = passport ? `a ${passport} passport holder, 1-2 lines, end with: check the official embassy site before booking` : "Saudi/GCC passport";
@@ -671,7 +677,10 @@ app.post("/trip-plan", async (req, res) => {
     );
     const text = response.data.content[0].text;
     const clean = text.replace(/```json\n?|```\n?/g, "").trim();
-    res.json(JSON.parse(clean));
+    const planData = JSON.parse(clean);
+    tripPlanCache.set(planKey, { at: Date.now(), data: planData });
+    if (tripPlanCache.size > 400) tripPlanCache.delete(tripPlanCache.keys().next().value);   // drop the oldest
+    res.json(planData);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
