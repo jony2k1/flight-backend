@@ -2604,6 +2604,22 @@ app.get("/flight-prices", async (req, res) => {
       rows = Array.isArray(r.data?.data) ? r.data.data : [];
       if (rows.length) { usedMarket = market || "default"; break; }
     }
+    // Still nothing (e.g. Riyadh is thin in prices_for_dates) → the "latest prices" feed, mapped to the same shape.
+    if (!rows.length) {
+      try {
+        const r2 = await axios.get("https://api.travelpayouts.com/aviasales/v3/get_latest_prices", {
+          params: { origin: from, destination: to, beginning_of_period: `${month.slice(0, 7)}-01`, period_type: "month",
+            one_way: ret ? "false" : "true", sorting: "price", currency, limit: 60, page: 1 },
+          headers: { "X-Access-Token": TP_TOKEN }, timeout: 10000,
+        });
+        const l = Array.isArray(r2.data?.data) ? r2.data.data : [];
+        rows = l.map((t) => ({ price: t.value ?? t.price, airline: t.airline || "", flight_number: "", transfers: t.number_of_changes ?? t.transfers,
+          duration: t.duration, departure_at: t.depart_date, return_at: t.return_date || null, found_at: t.found_at,
+          link: `/search/${from}${String(t.depart_date || "").slice(8, 10)}${String(t.depart_date || "").slice(5, 7)}${to}1` }))
+          .filter((t) => t.price > 0 && t.departure_at);
+        if (rows.length) usedMarket = "latest";
+      } catch (e) { console.error("[flight-prices latest]", e?.response?.status, e?.message); }
+    }
     if (!rows.length) {
       const data = { ok: true, from, to, month, currency: currency.toUpperCase(), cheapest: null, days: [], link: null };
       flightPriceCache.set(key, { at: Date.now() - 2 * 3600000, data });   // empty answers are kept 1 h only
