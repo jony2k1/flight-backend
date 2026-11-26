@@ -2591,15 +2591,22 @@ app.get("/flight-prices", async (req, res) => {
   if (hit && Date.now() - hit.at < 3 * 3600000) return res.json({ ...hit.data, cached: true });
 
   try {
-    const r = await axios.get("https://api.travelpayouts.com/aviasales/v3/prices_for_dates", {
-      params: { origin: from, destination: to, departure_at: month, return_at: ret || undefined, one_way: ret ? "false" : "true",
-        sorting: "price", unique: "false", direct: "false", currency, limit: 60, page: 1, market: "en" },
-      headers: { "X-Access-Token": TP_TOKEN }, timeout: 10000,
-    });
-    const rows = Array.isArray(r.data?.data) ? r.data.data : [];
+    // Fares are grouped by Aviasales "market" (the site the searches came from). Gulf/India routes are
+    // often empty on the default market, so try the likely ones until one has data.
+    const markets = [...new Set([req.query.market, "", "sa", "ae", "in", "us"].filter((m) => m !== undefined))];
+    let rows = [], usedMarket = "";
+    for (const market of markets) {
+      const r = await axios.get("https://api.travelpayouts.com/aviasales/v3/prices_for_dates", {
+        params: { origin: from, destination: to, departure_at: month, return_at: ret || undefined, one_way: ret ? "false" : "true",
+          sorting: "price", unique: "false", direct: "false", currency, limit: 60, page: 1, market: market || undefined },
+        headers: { "X-Access-Token": TP_TOKEN }, timeout: 10000,
+      });
+      rows = Array.isArray(r.data?.data) ? r.data.data : [];
+      if (rows.length) { usedMarket = market || "default"; break; }
+    }
     if (!rows.length) {
       const data = { ok: true, from, to, month, currency: currency.toUpperCase(), cheapest: null, days: [], link: null };
-      flightPriceCache.set(key, { at: Date.now(), data });
+      flightPriceCache.set(key, { at: Date.now() - 2 * 3600000, data });   // empty answers are kept 1 h only
       return res.json(data);
     }
     // cheapest fare per departure day (for the "cheapest days" strip)
@@ -2612,7 +2619,7 @@ app.get("/flight-prices", async (req, res) => {
     const best = rows.reduce((a, b) => (b.price < a.price ? b : a));
     const aviasalesUrl = best.link ? `https://www.aviasales.com${best.link.startsWith("/") ? "" : "/"}${best.link}` : `https://www.aviasales.com/search/${from}${month.slice(8, 10) || "01"}${month.slice(5, 7)}${to}1`;
     const data = {
-      ok: true, from, to, month, currency: currency.toUpperCase(),
+      ok: true, from, to, month, currency: currency.toUpperCase(), market: usedMarket,
       cheapest: {
         price: best.price, airline: best.airline || "", flightNumber: best.flight_number || "",
         transfers: best.transfers ?? null, durationMin: best.duration_to || best.duration || null,
