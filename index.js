@@ -2550,6 +2550,88 @@ app.post("/flights/delete", async (req, res) => {
 });
 app.get("/flights/relay-status", (req, res) => res.json({ enabled: firestoreAdmin.enabled() }));
 
+// ── FLIGHT PRICES (Travelpayouts / Aviasales Flight Data API) ─────────────────
+// Cached fares that Aviasales users found in the last ~48 h (not a live search). The token stays here on
+// the server (Render env TRAVELPAYOUTS_TOKEN); the app only gets prices + a partner link that carries our
+// marker. Answers are cached 3 h so the cards open instantly and we stay far below the API limits.
+const TP_TOKEN = process.env.TRAVELPAYOUTS_TOKEN || "";
+const TP_MARKER = process.env.TRAVELPAYOUTS_MARKER || "728476";
+const TP_TRS = process.env.TRAVELPAYOUTS_TRS || "607093";          // the "Mobile app" project
+const flightPriceCache = new Map();
+const tpLinkCache = new Map();
+
+// Partner link for an Aviasales URL: the official Links API (short tp.st link) when it answers,
+// else the documented tp.media redirect with the same marker/project.
+async function tpPartnerLink(url) {
+  if (tpLinkCache.has(url)) return tpLinkCache.get(url);
+  let out = `https://tp.media/r?marker=${TP_MARKER}&trs=${TP_TRS}&p=4114&campaign_id=100&u=${encodeURIComponent(url)}`;
+  try {
+    const r = await axios.post("https://api.travelpayouts.com/links/v1/create",
+      { trs: +TP_TRS, marker: +TP_MARKER, shorten: true, links: [{ url }] },
+      { headers: { "X-Access-Token": TP_TOKEN, "Content-Type": "application/json" }, timeout: 6000 });
+    const l = r.data?.result?.links?.[0];
+    if (l?.partner_url) out = l.partner_url;
+  } catch { /* keep the redirect link */ }
+  tpLinkCache.set(url, out);
+  if (tpLinkCache.size > 2000) tpLinkCache.delete(tpLinkCache.keys().next().value);
+  return out;
+}
+
+app.get("/flight-prices", async (req, res) => {
+  const from = String(req.query.from || "").toUpperCase().slice(0, 3);
+  const to = String(req.query.to || "").toUpperCase().slice(0, 3);
+  const month = /^\d{4}-\d{2}(-\d{2})?$/.test(req.query.month || "") ? req.query.month : new Date().toISOString().slice(0, 7);
+  const ret = /^\d{4}-\d{2}(-\d{2})?$/.test(req.query.return || "") ? req.query.return : "";
+  const currency = /^[a-z]{3}$/i.test(req.query.currency || "") ? req.query.currency.toLowerCase() : "usd";
+  if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) return res.status(400).json({ ok: false, reason: "bad_route" });
+  if (!TP_TOKEN) return res.json({ ok: false, reason: "not_configured" });
+
+  const key = [from, to, month, ret, currency].join("|");
+  const hit = flightPriceCache.get(key);
+  if (hit && Date.now() - hit.at < 3 * 3600000) return res.json({ ...hit.data, cached: true });
+
+  try {
+    const r = await axios.get("https://api.travelpayouts.com/aviasales/v3/prices_for_dates", {
+      params: { origin: from, destination: to, departure_at: month, return_at: ret || undefined, one_way: ret ? "false" : "true",
+        sorting: "price", unique: "false", direct: "false", currency, limit: 60, page: 1, market: "en" },
+      headers: { "X-Access-Token": TP_TOKEN }, timeout: 10000,
+    });
+    const rows = Array.isArray(r.data?.data) ? r.data.data : [];
+    if (!rows.length) {
+      const data = { ok: true, from, to, month, currency: currency.toUpperCase(), cheapest: null, days: [], link: null };
+      flightPriceCache.set(key, { at: Date.now(), data });
+      return res.json(data);
+    }
+    // cheapest fare per departure day (for the "cheapest days" strip)
+    const byDay = new Map();
+    for (const t of rows) {
+      const d = String(t.departure_at || "").slice(0, 10);
+      if (d && (!byDay.has(d) || t.price < byDay.get(d).price)) byDay.set(d, t);
+    }
+    const days = [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, t]) => ({ date, price: t.price }));
+    const best = rows.reduce((a, b) => (b.price < a.price ? b : a));
+    const aviasalesUrl = best.link ? `https://www.aviasales.com${best.link.startsWith("/") ? "" : "/"}${best.link}` : `https://www.aviasales.com/search/${from}${month.slice(8, 10) || "01"}${month.slice(5, 7)}${to}1`;
+    const data = {
+      ok: true, from, to, month, currency: currency.toUpperCase(),
+      cheapest: {
+        price: best.price, airline: best.airline || "", flightNumber: best.flight_number || "",
+        transfers: best.transfers ?? null, durationMin: best.duration_to || best.duration || null,
+        departAt: best.departure_at || null, returnAt: best.return_at || null,
+        foundAt: best.found_at || null,
+      },
+      days,
+      link: await tpPartnerLink(aviasalesUrl),
+    };
+    flightPriceCache.set(key, { at: Date.now(), data });
+    if (flightPriceCache.size > 3000) flightPriceCache.delete(flightPriceCache.keys().next().value);
+    res.json(data);
+  } catch (err) {
+    console.error("[flight-prices]", err?.response?.status, err?.message);
+    if (hit) return res.json({ ...hit.data, cached: true, stale: true });
+    res.json({ ok: false, reason: err?.response?.status === 401 ? "bad_token" : "unavailable" });
+  }
+});
+
 app.listen(PORT, () => {
   push.start();
   console.log(`✈️ Server running on http://localhost:${PORT}`);
