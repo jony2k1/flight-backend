@@ -2621,7 +2621,10 @@ app.get("/flight-prices", async (req, res) => {
       } catch (e) { console.error("[flight-prices latest]", e?.response?.status, e?.message); }
     }
     if (!rows.length) {
-      const data = { ok: true, from, to, month, currency: currency.toUpperCase(), cheapest: null, days: [], link: null };
+      // no recent fares (Aviasales has little Riyadh data) → still give a search link with our marker
+      const day1 = month.length > 7 ? month.slice(8, 10) : "01";
+      const searchUrl = `https://www.aviasales.com/search/${from}${day1}${month.slice(5, 7)}${to}1`;
+      const data = { ok: true, from, to, month, currency: currency.toUpperCase(), cheapest: null, days: [], link: await tpPartnerLink(searchUrl) };
       flightPriceCache.set(key, { at: Date.now() - 2 * 3600000, data });   // empty answers are kept 1 h only
       return res.json(data);
     }
